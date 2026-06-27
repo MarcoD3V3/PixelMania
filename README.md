@@ -34,6 +34,21 @@ node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 
 ## Producción
 
+### Railway (recomendado)
+
+Guía completa: **[deploy/RAILWAY.md](deploy/RAILWAY.md)**
+
+Resumen rápido:
+
+1. **New Project** → conecta GitHub → deploy automático
+2. **Volume** → mount path **`/app/data`** (obligatorio para guardar el mapa)
+3. **Variables:** `NODE_ENV=production`, `SESSION_SECRET`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `TRUST_PROXY=1`
+4. **Networking** → Generate Domain → usa esa URL en Discord OAuth:
+   `https://tu-app.up.railway.app/auth/discord/callback`
+5. Comprueba: `/health`
+
+El archivo `railway.toml` ya configura health check y `npm start`.
+
 ### Checklist antes de subir
 
 - [ ] `NODE_ENV=production` en `.env`

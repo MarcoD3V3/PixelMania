@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+data/pixels.json
+data/users.json
+data/territories.json
+data/sessions/*
+!data/sessions/.gitkeep
+.git
+.cursor
+*.md
+!README.md

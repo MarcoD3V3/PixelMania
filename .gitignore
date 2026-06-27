@@ -1,0 +1,21 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+
+# Datos del juego (persistencia en servidor — no subir al repo)
+data/pixels.json
+data/users.json
+data/territories.json
+data/sessions/
+
+# Logs y sistema
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PixelMania — Lienzo colaborativo en vivo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="header__brand">
+        <span class="header__logo">▣</span>
+        <h1>PixelMania</h1>
+      </div>
+
+      <nav class="header__nav">
+        <button type="button" class="nav-btn nav-btn--territory" data-modal="territory">
+          <span class="nav-btn__icon">🛡</span> Territorio
+        </button>
+        <button type="button" class="nav-btn nav-btn--missions" data-modal="missions">
+          <span class="nav-btn__icon">🎯</span> Misiones
+        </button>
+        <button type="button" class="nav-btn nav-btn--shop" data-modal="shop">
+          <span class="nav-btn__icon">🛒</span> Tienda
+        </button>
+        <label class="nav-toggle" title="Mostrar marcos de territorios">
+          <input type="checkbox" id="show-territory-frames" />
+          <span class="nav-toggle__box"></span>
+          <span class="nav-toggle__label">Marcos</span>
+        </label>
+      </nav>
+
+      <div class="header__right">
+        <div class="header__stats">
+          <span class="stat" title="Usuarios conectados">
+            <span class="stat__dot"></span>
+            <span id="online-count">—</span> en línea
+          </span>
+          <span class="stat stat--coins" id="coins-stat" hidden>
+            🪙 <span id="coins-count">0</span>
+          </span>
+          <span class="stat" id="quota-stat" hidden>
+            <span id="quota-count">—</span> píxeles
+          </span>
+          <span class="stat" id="cooldown-stat" title="Recarga de píxeles">
+            ⏱ <span id="cooldown-timer">—</span>
+          </span>
+        </div>
+        <div id="auth-area" class="auth-area"></div>
+      </div>
+    </header>
+
+    <main class="main">
+      <aside class="sidebar">
+        <section class="panel">
+          <h2>Paleta</h2>
+          <p class="panel-desc palette-hint">Gratis: <strong>negro</strong> y <strong>blanco</strong>. Más en Tienda → Colores. <span class="palette-hint__personal">Solo tu cuenta.</span></p>
+          <div id="color-palette" class="palette"></div>
+          <div class="color-preview">
+            <div id="selected-swatch" class="swatch"></div>
+            <input type="color" id="custom-color" value="#000000" title="Colores desbloqueados" />
+            <span id="selected-hex">#000000</span>
+          </div>
+          <p class="panel-desc custom-color-hint" id="custom-color-hint">Toca negro o blanco arriba para pintar</p>
+        </section>
+        <section class="panel panel--tycoon" id="tycoon-panel" hidden>
+          <h2>Progreso</h2>
+          <div class="tycoon-mini">
+            <div class="tycoon-mini__row">
+              <span>Nivel <strong id="tycoon-level">1</strong></span>
+              <span id="tycoon-clicks" class="tycoon-mini__clicks">10 clics/celda</span>
+            </div>
+            <div class="tycoon-xpbar" title="Experiencia">
+              <div class="tycoon-xpbar__fill" id="tycoon-xp-fill"></div>
+            </div>
+            <p class="tycoon-mini__xp" id="tycoon-xp-text">0 / 40 XP</p>
+            <p class="tycoon-mini__passive" id="tycoon-passive" hidden></p>
+          </div>
+        </section>
+        <section class="panel">
+          <h2>Controles</h2>
+          <ul class="tips">
+            <li id="draw-tip"><kbd>Click</kbd> → cincela celdas vacías</li>
+            <li><kbd>Click der.</kbd> / <kbd>Espacio</kbd> → mover mapa</li>
+            <li><kbd>Rueda</kbd> zoom · <kbd>C</kbd> copiar enlace</li>
+          </ul>
+          <div class="coord-bar">
+            <span id="coord-display">—</span>
+            <button type="button" id="copy-link" class="btn btn--sm btn--ghost" title="Copiar enlace">🔗</button>
+          </div>
+          <div class="zoom-controls">
+            <button type="button" id="zoom-out">−</button>
+            <span id="zoom-level">100%</span>
+            <button type="button" id="zoom-in">+</button>
+            <button type="button" id="zoom-reset">⌂</button>
+          </div>
+          <p class="zoom-lens-hint" id="zoom-lens-hint"></p>
+        </section>
+        <section class="panel panel--mini">
+          <h2>Minimapa</h2>
+          <div class="minimap-wrap">
+            <canvas id="minimap-base" width="160" height="160" hidden></canvas>
+            <canvas id="minimap" width="160" height="160"></canvas>
+          </div>
+        </section>
+      </aside>
+
+      <div class="canvas-wrap" id="canvas-wrap">
+        <canvas id="canvas"></canvas>
+        <canvas id="territory-layer"></canvas>
+        <div id="claim-preview" class="claim-preview" hidden></div>
+        <div id="cursor-preview" class="cursor-preview" hidden></div>
+        <div id="chisel-badge" class="chisel-badge" hidden></div>
+        <div id="pixel-card" class="pixel-card" hidden></div>
+        <div id="toast" class="toast" hidden></div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <p>Mapa <strong>infinito</strong> · origen en (0, 0) · <strong id="cooldown-label">1000</strong> px / 10 min</p>
+    </footer>
+  </div>
+
+  <!-- Modales -->
+  <div class="modal-overlay" id="modal-overlay" hidden>
+    <div class="modal" id="modal-territory" hidden>
+      <header class="modal__header modal__header--territory">
+        <div>
+          <h2>🛡 Tu Territorio</h2>
+          <p>Reclama zonas protegidas bajo tu nombre de usuario</p>
+        </div>
+        <button type="button" class="modal__close" data-close-modal aria-label="Cerrar">×</button>
+      </header>
+      <div class="modal__body">
+        <div class="modal-grid">
+          <section class="modal-card">
+            <h3>Configuración</h3>
+            <p class="territory-balance" id="territory-balance">Territorio: — px</p>
+            <form id="claim-color-form" class="claim-color-form">
+              <label class="field">
+                <span>Color de tus marcos</span>
+                <input type="color" id="claim-color" value="#7c3aed" />
+              </label>
+              <button type="submit" class="btn btn--accent">Guardar color</button>
+            </form>
+          </section>
+          <section class="modal-card" id="claim-panel" hidden>
+            <h3>Reclamar territorio</h3>
+            <p class="panel-desc">Arrastra en el mapa para marcar una zona protegida. Solo tú podrás pintar ahí (excepto en asedios).</p>
+            <button type="button" id="claim-mode-btn" class="btn btn--claim-wide">Modo reclamar: OFF</button>
+            <div id="claim-status" class="claim-status"></div>
+          </section>
+          <section class="modal-card modal-card--wide">
+            <h3>Territorios en el mapa</h3>
+            <p class="panel-desc">Asedia zonas ajenas · 15 min de batalla · Captura con 40% del área</p>
+            <div id="territory-list" class="territory-list"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="modal-missions" hidden>
+      <header class="modal__header modal__header--missions">
+        <div>
+          <h2>🎯 Misiones</h2>
+          <p>Completa retos difíciles y gana monedas</p>
+        </div>
+        <button type="button" class="modal__close" data-close-modal aria-label="Cerrar">×</button>
+      </header>
+      <div class="modal__body modal__body--scroll">
+        <div id="missions-list" class="missions-list missions-list--modal"></div>
+      </div>
+    </div>
+
+    <div class="modal modal--shop" id="modal-shop" hidden>
+      <header class="modal__header modal__header--shop">
+        <div class="shop-header__titles">
+          <h2>🛒 Tienda</h2>
+          <p>Gana monedas en Misiones · compras y mejoras <strong>solo para tu cuenta</strong></p>
+        </div>
+        <div class="shop-header__balance" id="shop-balance">Tu saldo: <strong>0</strong> 🪙</div>
+        <button type="button" class="modal__close" data-close-modal aria-label="Cerrar">×</button>
+      </header>
+      <nav class="shop-tabs" id="shop-tabs" aria-label="Categorías de la tienda"></nav>
+      <div class="modal__body modal__body--scroll modal__body--shop">
+        <p class="shop-guide" id="shop-guide">
+          <span class="shop-guide__step"><em>1</em> Misiones → 🪙</span>
+          <span class="shop-guide__step"><em>2</em> Categoría o buscar</span>
+          <span class="shop-guide__step"><em>3</em> Comprar / subir nivel</span>
+        </p>
+        <div class="shop-toolbar">
+          <input type="search" id="shop-search" class="shop-search" placeholder="Buscar artículo…" autocomplete="off" />
+          <span class="shop-toolbar__meta" id="shop-item-count"></span>
+        </div>
+        <div id="shop-list" class="shop-list shop-list--modal"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/colors.js"></script>
+  <script src="/js/storage.js"></script>
+  <script src="/js/client.js"></script>
+</body>
+</html>

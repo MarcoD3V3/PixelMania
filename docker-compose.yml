@@ -1,0 +1,13 @@
+services:
+  pixelmania:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - pixelmania_data:/app/data
+
+volumes:
+  pixelmania_data:
