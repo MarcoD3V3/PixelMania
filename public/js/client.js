@@ -61,6 +61,34 @@
   };
   let paintZones = [];
   let arcadeLive = [];
+  let arcadeInited = false;
+
+  function ensureArcadeInit(data = {}) {
+    if (typeof Arcade === 'undefined') return;
+    const zones = data.zones || data.paintZones || paintZones || [];
+    const games = data.games || data.arcadeGames || [];
+    if (zones.length) paintZones = zones;
+    const opts = {
+      zones,
+      games,
+      reflex: data.reflex,
+      getUser: () => currentUser,
+      getUserId: () => currentUser?.id,
+      goTo: (x, y) => goToCoords(x, y, scale),
+      closeModals,
+      toast: showToast,
+      onUserUpdate: (u) => renderAuth(u),
+      onWallet: (w) => updateWallet(w),
+    };
+    if (!arcadeInited) {
+      Arcade.init(opts);
+      Arcade.bindUI();
+      arcadeInited = true;
+    } else {
+      if (zones.length) Arcade.setZones(zones);
+      if (games.length) Arcade.setGames(games);
+    }
+  }
 
   const MINIMAP_SIZE = 168;
   const MISSION_ICONS = {
@@ -656,7 +684,10 @@
       refreshShopData().then(paint);
     }
     if (name === 'territory') updateTerritoryUI();
-    if (name === 'arcade' && typeof Arcade !== 'undefined') Arcade.renderZonesList();
+    if (name === 'arcade' && typeof Arcade !== 'undefined') {
+      Arcade.renderZonesList();
+      Arcade.renderGamesList();
+    }
     PMStorage.savePrefs({ color: selectedColor, claimMode, lastModal: name });
   }
 
@@ -2894,11 +2925,13 @@
     }
     if (data.user?.tycoon) updateTycoonUI(data.user.tycoon);
     onlineCount.textContent = data.online;
-    if (data.paintZones?.length) {
-      paintZones = data.paintZones;
-      if (typeof Arcade !== 'undefined') Arcade.setZones(paintZones);
+    if (data.paintZones?.length || data.arcadeGames?.length) {
+      ensureArcadeInit({
+        paintZones: data.paintZones,
+        arcadeGames: data.arcadeGames,
+        reflex: data.reflex,
+      });
     }
-    if (data.arcadeGames?.length && typeof Arcade !== 'undefined') Arcade.setGames(data.arcadeGames);
     if (data.arcadeLive?.length) {
       arcadeLive = data.arcadeLive;
       scheduleRender();
@@ -2996,24 +3029,15 @@
 
   window.addEventListener('load', () => {
     loadBlueprintConfig();
-    fetch('/api/minigames').then((r) => r.json()).then((data) => {
-      paintZones = data.zones || [];
-      if (typeof Arcade !== 'undefined') {
-        Arcade.init({
-          zones: data.zones || [],
-          games: data.games || [],
-          reflex: data.reflex,
-          getUser: () => currentUser,
-          getUserId: () => currentUser?.id,
-          goTo: (x, y) => goToCoords(x, y, scale),
-          closeModals,
-          toast: showToast,
-          onUserUpdate: (u) => renderAuth(u),
-          onWallet: (w) => updateWallet(w),
-        });
-        Arcade.bindUI();
-      }
-    }).catch(() => {});
+    fetch('/api/minigames')
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => ensureArcadeInit(data))
+      .catch(() => {
+        ensureArcadeInit({ paintZones, arcadeGames: Arcade?.getGames?.() || [] });
+      });
     if (parseUrlNavigation()) whenLayoutReady(() => applyUrlNavigation());
   });
 

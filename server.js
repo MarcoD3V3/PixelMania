@@ -118,10 +118,28 @@ const sessionMiddleware = session({
 app.use(sessionMiddleware);
 
 app.use(express.json({ limit: '32mb' }));
+
+const APP_BUILD = (
+  process.env.RAILWAY_GIT_COMMIT_SHA
+  || process.env.GIT_COMMIT
+  || require('./package.json').version
+).toString().slice(0, 12);
+
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: IS_PROD ? '1d' : 0,
   etag: true,
+  index: false,
+  setHeaders(res, filePath) {
+    if (filePath.endsWith(`${path.sep}index.html`)) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  },
 }));
+
+app.get('/', (_req, res) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 const socketCorsOrigin = (() => {
   const url = resolvePublicUrl();
@@ -1098,6 +1116,8 @@ app.get('/health', (_req, res) => {
   res.status(200).json({
     ok: true,
     env: IS_PROD ? 'production' : 'development',
+    build: APP_BUILD,
+    arcadeGames: minigamesCfg.listGames().length,
     uptime: Math.floor(process.uptime()),
     pixels: pixels.size,
     users: users.size,
