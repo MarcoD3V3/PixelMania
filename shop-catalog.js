@@ -1,6 +1,7 @@
 /** Catálogo de tienda — 300+ productos únicos curados */
 const { ZOOM_LENS_SHOP_ITEM } = require('./zoom-lens');
 const { makeLeveled } = require('./shop-levels');
+const profileCosmetics = require('./profile-cosmetics');
 const colorSystem = require('./color-system');
 const D = require('./shop-items-data');
 
@@ -41,6 +42,34 @@ const CORE_SHOP = [
     type: 'item',
     item: 'paint_boost',
     amount: 300,
+  },
+  {
+    id: 'recharge_accelerator',
+    category: 'dibujo',
+    name: 'Acelerador de recarga',
+    desc: 'Reduce 1 segundo el tiempo de recarga por nivel. Mínimo 1 minuto.',
+    hint: 'Precio crece hasta trillones. El temporizador baja segundo a segundo.',
+    kind: 'Mejorable',
+    icon: '⏳',
+    type: 'leveled',
+    upgradeKey: 'recharge_accelerator',
+    procedural: 'recharge',
+    basePrice: 340,
+    priceGrowth: 1.116,
+    price: 340,
+  },
+  {
+    id: 'pixel_blueprint_token',
+    category: 'dibujo',
+    name: 'Plano píxel (1 uso)',
+    desc: 'Convierte una imagen en guía sobre el mapa para pintarla tú.',
+    hint: 'Consumible: al activar pagas monedas según píxeles, colores y tamaño del lienzo (planos grandes cuestan mucho más).',
+    kind: 'Consumible',
+    icon: '🖼',
+    price: 5200,
+    type: 'item',
+    item: 'pixel_blueprint',
+    amount: 1,
   },
   {
     id: 'territory_500',
@@ -126,6 +155,25 @@ const SHOP_CATEGORIES_EXTRA = [
   },
 ];
 
+function makeProceduralPersonalization(opts) {
+  return {
+    id: opts.id,
+    category: 'personalizacion',
+    name: opts.name,
+    desc: opts.desc,
+    hint: opts.hint || `Hasta nivel ${profileCosmetics.MAX_LEVEL}. Cada compra desbloquea más estilo tipo Discord.`,
+    kind: 'Mejorable',
+    icon: opts.icon,
+    type: 'leveled',
+    upgradeKey: opts.id,
+    procedural: opts.procedural,
+    maxLevel: profileCosmetics.MAX_LEVEL,
+    basePrice: opts.basePrice,
+    priceGrowth: opts.priceGrowth,
+    price: opts.basePrice,
+  };
+}
+
 function buildGeneratedItems() {
   const items = [];
 
@@ -144,52 +192,59 @@ function buildGeneratedItems() {
     });
   }
 
-  items.push(makeLeveled({
+  items.push(makeProceduralPersonalization({
     id: 'perso_marcos',
-    category: 'personalizacion',
+    procedural: 'frame',
     name: 'Marcos de avatar',
-    desc: 'Un solo producto: desbloquea marcos progresivos para tu chip.',
-    hint: 'Cada compra sube de nivel y desbloquea el siguiente marco.',
+    desc: 'Marco alrededor de tu avatar — brillo, degradados y holo en niveles altos.',
+    hint: 'Como Discord: cuanto más subes, más llamativo el borde.',
     icon: '🖼',
-    basePrice: 48,
-    priceGrowth: 1.22,
-    levels: D.FRAMES.map((f) => ({ name: f.name, desc: f.desc, price: f.price })),
+    basePrice: 240,
+    priceGrowth: 1.096,
   }));
 
-  items.push(makeLeveled({
+  items.push(makeProceduralPersonalization({
     id: 'perso_insignias',
-    category: 'personalizacion',
+    procedural: 'badge',
     name: 'Insignias de perfil',
-    desc: 'Colección de badges que se desbloquean nivel a nivel.',
-    hint: 'Visible en tu tarjeta de píxel al subir cada nivel.',
+    desc: 'Badge junto a tu nombre en el mapa y en tu chip.',
+    hint: 'Visible en la tarjeta al pasar sobre tus píxeles.',
     icon: '🏅',
-    basePrice: 42,
-    priceGrowth: 1.24,
-    levels: D.BADGES.map((b) => ({ name: b.name, desc: b.desc, price: b.price })),
+    basePrice: 195,
+    priceGrowth: 1.093,
   }));
 
-  items.push(makeLeveled({
+  items.push(makeProceduralPersonalization({
     id: 'perso_titulos',
-    category: 'personalizacion',
+    procedural: 'title',
     name: 'Títulos de perfil',
-    desc: 'Un título bajo tu nombre — compra repetida = siguiente título.',
-    hint: 'Como la lente: un producto, muchos niveles.',
+    desc: 'Título bajo tu nombre + estado personal (nv.15+) + color nombre (nv.60+).',
+    hint: 'Estilo Discord: título, estado y color de nombre.',
     icon: '📛',
-    basePrice: 72,
-    priceGrowth: 1.26,
-    levels: D.TITLES.map((t) => ({ name: t.name, desc: t.desc, price: t.price })),
+    basePrice: 310,
+    priceGrowth: 1.098,
   }));
 
-  items.push(makeLeveled({
+  items.push(makeProceduralPersonalization({
     id: 'perso_auras',
-    category: 'personalizacion',
+    procedural: 'aura',
     name: 'Auras de cursor',
-    desc: 'Efectos brillantes alrededor de tu cursor, nivel a nivel.',
-    hint: 'Cada nivel desbloquea una aura distinta.',
+    desc: 'Resplandor y partículas siguiendo tu cursor al pintar.',
+    hint: 'Niveles altos = arcoíris y estela.',
     icon: '💫',
-    basePrice: 88,
-    priceGrowth: 1.28,
-    levels: D.AURAS.map((a) => ({ name: a.name, desc: a.desc, price: a.price })),
+    basePrice: 360,
+    priceGrowth: 1.101,
+  }));
+
+  items.push(makeProceduralPersonalization({
+    id: 'perso_banners',
+    procedural: 'banner',
+    name: 'Banners de tarjeta',
+    desc: 'Fondo degradado detrás de tu perfil — como el banner de Discord.',
+    hint: 'Se ve en tu chip y al hover en tus píxeles.',
+    icon: '🎴',
+    basePrice: 420,
+    priceGrowth: 1.104,
   }));
 
   items.push(makeLeveled({

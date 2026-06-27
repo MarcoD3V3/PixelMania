@@ -2,7 +2,22 @@
 
 const FREE_COLORS = ['#000000', '#FFFFFF'];
 
-/** Los 5 principales (negro, blanco + RGB) — primeros en la tienda */
+/** Primer color premium tras negro/blanco gratis. */
+const COLOR_UNLOCK_START = 32;
+/** Tope de seguridad (progresión lineal suave, no debería acercarse en la práctica). */
+const COLOR_UNLOCK_MAX_PRICE = 1_000_000_000;
+
+/** Precio del desbloqueo n-ésimo (n=0 → 32, n=1 → 36, n=2 → 39, n=3 → 42, …). */
+function colorUnlockPriceAt(unlockIndex) {
+  const n = Math.max(0, Math.trunc(unlockIndex));
+  if (n === 0) return COLOR_UNLOCK_START;
+  let price = COLOR_UNLOCK_START;
+  for (let i = 0; i < n; i++) {
+    price += (i % 3 === 0) ? 4 : 3;
+  }
+  return Math.min(COLOR_UNLOCK_MAX_PRICE, price);
+}
+
 const CORE_SHOP_COLORS = [
   {
     id: 'color_negro',
@@ -68,12 +83,42 @@ function userOwnsColor(user, hex) {
   return canUseColor(user, hex);
 }
 
+/** Colores premium ya comprados (sin contar negro/blanco gratis). */
+function premiumUnlockCount(user) {
+  return (user?.unlockedColors || []).filter((c) => normalizeHex(c)).length;
+}
+
+/** Precio del próximo desbloqueo según cuántos premium ya tiene el usuario. */
+function colorUnlockPrice(user) {
+  return colorUnlockPriceAt(premiumUnlockCount(user));
+}
+
+function unlockColorForUser(user, hex) {
+  const h = normalizeHex(hex);
+  if (!h) return { ok: false, error: 'Color inválido' };
+  if (canUseColor(user, h)) return { ok: false, error: 'Ya tienes este color' };
+  const price = colorUnlockPrice(user);
+  if ((user?.coins ?? 0) < price) {
+    return { ok: false, error: `Monedas insuficientes (tienes ${user.coins}, necesitas ${price.toLocaleString()})`, price };
+  }
+  if (!user.unlockedColors) user.unlockedColors = [];
+  user.unlockedColors.push(h);
+  user.coins -= price;
+  return { ok: true, price, hex: h };
+}
+
 module.exports = {
   FREE_COLORS,
   CORE_SHOP_COLORS,
   CORE_HEX_SET,
+  COLOR_UNLOCK_START,
+  COLOR_UNLOCK_MAX_PRICE,
   normalizeHex,
   colorsForUser,
   canUseColor,
   userOwnsColor,
+  premiumUnlockCount,
+  colorUnlockPriceAt,
+  colorUnlockPrice,
+  unlockColorForUser,
 };

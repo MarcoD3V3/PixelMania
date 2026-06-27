@@ -27,6 +27,12 @@
         <button type="button" class="nav-btn nav-btn--shop" data-modal="shop">
           <span class="nav-btn__icon">🛒</span> Tienda
         </button>
+        <button type="button" class="nav-btn" data-scroll-to="map-hud">
+          <span class="nav-btn__icon">🏆</span> Top 10
+        </button>
+        <button type="button" class="nav-btn" data-modal="arcade">
+          <span class="nav-btn__icon">🕹</span> Arcade
+        </button>
         <label class="nav-toggle" title="Mostrar marcos de territorios">
           <input type="checkbox" id="show-territory-frames" />
           <span class="nav-toggle__box"></span>
@@ -56,67 +62,145 @@
 
     <main class="main">
       <aside class="sidebar">
-        <section class="panel">
-          <h2>Paleta</h2>
-          <p class="panel-desc palette-hint">Gratis: <strong>negro</strong> y <strong>blanco</strong>. Más en Tienda → Colores. <span class="palette-hint__personal">Solo tu cuenta.</span></p>
-          <div id="color-palette" class="palette"></div>
-          <div class="color-preview">
-            <div id="selected-swatch" class="swatch"></div>
-            <input type="color" id="custom-color" value="#000000" title="Colores desbloqueados" />
-            <span id="selected-hex">#000000</span>
+        <nav class="sidebar-tabs" id="sidebar-tabs" aria-label="Panel lateral">
+          <button type="button" class="tab active" data-tab="paint" title="Colores y progreso">🎨</button>
+          <button type="button" class="tab" data-tab="tools" title="Pinceles">🖌</button>
+          <button type="button" class="tab" data-tab="blueprint" title="Img → píxeles">🖼</button>
+          <button type="button" class="tab" data-tab="profile" title="Tu perfil Discord-style">✨</button>
+          <button type="button" class="tab" data-tab="nav" title="Mapa y zoom">⌖</button>
+        </nav>
+
+        <div class="sidebar-panels">
+          <div class="tab-panel" id="tab-paint">
+            <section class="panel panel--compact">
+              <h2>Paleta</h2>
+              <div id="color-palette" class="palette"></div>
+              <section class="blueprint-paint-section" id="blueprint-palette-panel" hidden>
+                <h3 class="blueprint-paint-section__title">Plano · colores</h3>
+                <p class="panel-desc panel-desc--tiny">🔒 precio actual · ↗ sube con cada compra · toca para resaltar dónde pintar</p>
+                <div id="blueprint-paint-palette-side" class="blueprint-paint-palette"></div>
+              </section>
+              <div class="color-preview">
+                <div id="selected-swatch" class="swatch"></div>
+                <input type="color" id="custom-color" value="#000000" title="Colores desbloqueados" />
+                <span id="selected-hex">#000000</span>
+              </div>
+              <p class="panel-desc panel-desc--tiny" id="custom-color-hint">Negro/blanco gratis · más en Tienda</p>
+            </section>
+            <section class="panel panel--tycoon panel--compact" id="tycoon-panel" hidden>
+              <h2>Progreso</h2>
+              <div class="tycoon-mini">
+                <div class="tycoon-mini__row">
+                  <span>Nv. <strong id="tycoon-level">1</strong></span>
+                  <span id="tycoon-clicks" class="tycoon-mini__clicks">10 clics/celda</span>
+                </div>
+                <div class="tycoon-xpbar" title="Experiencia">
+                  <div class="tycoon-xpbar__fill" id="tycoon-xp-fill"></div>
+                </div>
+                <p class="tycoon-mini__xp" id="tycoon-xp-text">0 / 40 XP</p>
+                <p class="tycoon-mini__passive" id="tycoon-passive" hidden></p>
+              </div>
+            </section>
           </div>
-          <p class="panel-desc custom-color-hint" id="custom-color-hint">Toca negro o blanco arriba para pintar</p>
-        </section>
-        <section class="panel panel--tycoon" id="tycoon-panel" hidden>
-          <h2>Progreso</h2>
-          <div class="tycoon-mini">
-            <div class="tycoon-mini__row">
-              <span>Nivel <strong id="tycoon-level">1</strong></span>
-              <span id="tycoon-clicks" class="tycoon-mini__clicks">10 clics/celda</span>
-            </div>
-            <div class="tycoon-xpbar" title="Experiencia">
-              <div class="tycoon-xpbar__fill" id="tycoon-xp-fill"></div>
-            </div>
-            <p class="tycoon-mini__xp" id="tycoon-xp-text">0 / 40 XP</p>
-            <p class="tycoon-mini__passive" id="tycoon-passive" hidden></p>
+
+          <div class="tab-panel" id="tab-tools" hidden>
+            <section class="panel panel--brushes panel--compact" id="brush-panel" hidden>
+              <h2>Pinceles</h2>
+              <p class="panel-desc panel-desc--tiny" id="brush-panel-hint">Formas desbloqueadas en Tienda.</p>
+              <div id="brush-sizes" class="brush-sizes"></div>
+              <div id="brush-list" class="brush-list"></div>
+            </section>
+            <p class="sidebar-login-hint" id="tools-login-hint">Inicia sesión para ver pinceles.</p>
           </div>
-        </section>
-        <section class="panel">
-          <h2>Controles</h2>
-          <ul class="tips">
-            <li id="draw-tip"><kbd>Click</kbd> → cincela celdas vacías</li>
-            <li><kbd>Click der.</kbd> / <kbd>Espacio</kbd> → mover mapa</li>
-            <li><kbd>Rueda</kbd> zoom · <kbd>C</kbd> copiar enlace</li>
-          </ul>
-          <div class="coord-bar">
-            <span id="coord-display">—</span>
-            <button type="button" id="copy-link" class="btn btn--sm btn--ghost" title="Copiar enlace">🔗</button>
+
+          <div class="tab-panel" id="tab-blueprint" hidden>
+            <section class="panel panel--compact">
+              <h2>Plano píxel</h2>
+              <div id="blueprint-panel" class="blueprint-panel"></div>
+            </section>
           </div>
-          <div class="zoom-controls">
-            <button type="button" id="zoom-out">−</button>
-            <span id="zoom-level">100%</span>
-            <button type="button" id="zoom-in">+</button>
-            <button type="button" id="zoom-reset">⌂</button>
+
+          <div class="tab-panel" id="tab-profile" hidden>
+            <section class="panel panel--compact">
+              <h2>Mi perfil</h2>
+              <div id="profile-panel" class="profile-panel"></div>
+            </section>
           </div>
-          <p class="zoom-lens-hint" id="zoom-lens-hint"></p>
-        </section>
-        <section class="panel panel--mini">
-          <h2>Minimapa</h2>
-          <div class="minimap-wrap">
-            <canvas id="minimap-base" width="160" height="160" hidden></canvas>
-            <canvas id="minimap" width="160" height="160"></canvas>
+
+          <div class="tab-panel" id="tab-nav" hidden>
+            <section class="panel panel--compact">
+              <h2>Navegación</h2>
+              <div class="coord-bar">
+                <span id="coord-display">—</span>
+                <button type="button" id="copy-link" class="btn btn--sm btn--ghost" title="Copiar enlace">🔗</button>
+              </div>
+              <div class="zoom-controls">
+                <button type="button" id="zoom-out">−</button>
+                <span id="zoom-level">100%</span>
+                <button type="button" id="zoom-in">+</button>
+                <button type="button" id="zoom-reset">⌂</button>
+              </div>
+              <p class="zoom-lens-hint" id="zoom-lens-hint"></p>
+              <details class="sidebar-details">
+                <summary>Atajos</summary>
+                <ul class="tips tips--compact">
+                  <li id="draw-tip"><kbd>Click</kbd> pintar</li>
+                  <li><kbd>Der.</kbd> / <kbd>Espacio</kbd> mover</li>
+                  <li><kbd>Rueda</kbd> zoom · <kbd>C</kbd> enlace</li>
+                </ul>
+              </details>
+            </section>
           </div>
-        </section>
+        </div>
       </aside>
 
       <div class="canvas-wrap" id="canvas-wrap">
         <canvas id="canvas"></canvas>
+        <canvas id="blueprint-layer"></canvas>
         <canvas id="territory-layer"></canvas>
-        <div id="claim-preview" class="claim-preview" hidden></div>
-        <div id="cursor-preview" class="cursor-preview" hidden></div>
-        <div id="chisel-badge" class="chisel-badge" hidden></div>
-        <div id="pixel-card" class="pixel-card" hidden></div>
-        <div id="toast" class="toast" hidden></div>
+
+        <aside class="map-hud" id="map-hud">
+          <div class="minimap-panel">
+            <span class="minimap-panel__label">Minimapa</span>
+            <div class="minimap-wrap">
+              <canvas id="minimap-base" class="minimap-base" width="168" height="168" aria-hidden="true"></canvas>
+              <canvas id="minimap" width="168" height="168"></canvas>
+            </div>
+          </div>
+
+          <section class="leaderboard-dock" id="leaderboard-dock" aria-label="Top 10 más ricos">
+            <header class="leaderboard-dock__head">
+              <span class="leaderboard-dock__title">Top 10</span>
+              <button type="button" class="leaderboard-dock__refresh" id="leaderboard-refresh" title="Actualizar">↻</button>
+            </header>
+            <div class="leaderboard-dock__scroll">
+              <table class="leaderboard-table" id="leaderboard-table">
+                <thead>
+                  <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">Jugador</th>
+                    <th scope="col">🪙</th>
+                  </tr>
+                </thead>
+                <tbody id="leaderboard-list">
+                  <tr><td colspan="3" class="leaderboard-table__empty">…</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="leaderboard-dock__meta" id="leaderboard-meta"></p>
+          </section>
+        </aside>
+
+        <div id="blueprint-float-bar" class="blueprint-float-bar" hidden>
+            <span class="blueprint-float-bar__label">0%</span>
+            <div class="blueprint-float-bar__track"><div class="blueprint-float-bar__fill"></div></div>
+          </div>
+          <div id="claim-preview" class="claim-preview" hidden></div>
+          <div id="cursor-preview" class="cursor-preview" hidden></div>
+          <div id="chisel-badge" class="chisel-badge" hidden></div>
+          <div id="cursor-aura" class="cursor-aura" hidden aria-hidden="true"></div>
+          <div id="pixel-card" class="pixel-card" hidden></div>
+          <div id="toast" class="toast" hidden></div>
       </div>
     </main>
 
@@ -199,11 +283,67 @@
         <div id="shop-list" class="shop-list shop-list--modal"></div>
       </div>
     </div>
+
+    <div class="modal modal--arcade" id="modal-arcade" hidden>
+      <header class="modal__header modal__header--shop">
+        <div>
+          <h2>🕹 Arcade PixelMania</h2>
+          <p>Minijuegos y zonas del mapa con bonus de monedas</p>
+        </div>
+        <button type="button" class="modal__close" data-close-modal aria-label="Cerrar">×</button>
+      </header>
+      <div class="modal__body modal__body--scroll">
+        <section class="modal-card">
+          <h3>Minijuegos en vivo</h3>
+          <p class="panel-desc">Piano Tiles, Ritmo, Esquiva CORE y Reflejos. Doble clic en una zona 🎮 del mapa para jugar — otros jugadores ven tu partida.</p>
+          <div id="arcade-games-list" class="arcade-games-list"></div>
+        </section>
+        <section class="modal-card">
+          <h3>Reflejos pixel</h3>
+          <p class="panel-desc">15 segundos · clic en objetivos · cooldown 5 min</p>
+          <p class="panel-desc" id="reflex-status">Listo</p>
+          <button type="button" class="btn btn--accent" id="reflex-start">▶ Jugar Reflejos</button>
+        </section>
+        <section class="modal-card">
+          <h3>Arenas en el mapa</h3>
+          <p class="panel-desc">Zonas con bonus de monedas y minijuegos. Doble clic dentro del recuadro para jugar.</p>
+          <div id="arcade-zones-list" class="arcade-zones-list"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="reflex-overlay" class="reflex-overlay" hidden>
+    <div class="reflex-hud">
+      <span>⏱ <strong id="reflex-timer">15s</strong></span>
+      <span>🎯 <strong id="reflex-score">0</strong></span>
+      <button type="button" class="btn btn--sm btn--ghost" id="reflex-cancel">Salir</button>
+    </div>
+    <div id="reflex-arena" class="reflex-arena"></div>
+  </div>
+
+  <div id="arcade-game-overlay" class="arcade-game-overlay" hidden>
+    <div class="arcade-game-hud">
+      <span id="arcade-game-title">Minijuego</span>
+      <span>⏱ <strong id="arcade-game-timer">0s</strong></span>
+      <span>★ <strong id="arcade-game-score">0</strong></span>
+      <button type="button" class="btn btn--sm btn--ghost" id="arcade-game-cancel">Salir</button>
+    </div>
+    <canvas id="arcade-game-canvas" class="arcade-game-canvas" width="360" height="420"></canvas>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/js/colors.js"></script>
+  <script src="/js/skin-themes.js"></script>
+  <script src="/js/gadget-effects.js"></script>
   <script src="/js/storage.js"></script>
+  <script src="/js/number-format.js"></script>
+  <script src="/js/quota-recharge.js"></script>
+  <script src="/js/profile-cosmetics.js"></script>
+  <script src="/js/blueprint-colors.js"></script>
+  <script src="/js/pixel-blueprint.js"></script>
+  <script src="/js/arcade-games.js"></script>
+  <script src="/js/arcade.js"></script>
   <script src="/js/client.js"></script>
 </body>
 </html>

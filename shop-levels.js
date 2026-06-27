@@ -1,19 +1,37 @@
 /** Productos mejorables por niveles — precio y recompensas */
+const profileCosmetics = require('./profile-cosmetics');
+const quotaRecharge = require('./quota-recharge');
 
 function leveledMaxLevel(item) {
+  if (item.procedural === 'recharge') return Infinity;
+  if (item.maxLevel != null) return item.maxLevel;
   if (item.levels?.length) return item.levels.length;
-  return item.maxLevel ?? 10;
+  return item.procedural ? profileCosmetics.MAX_LEVEL : 10;
 }
 
 function leveledShopPrice(item, currentLevel) {
+  if (item.procedural === 'recharge' || item.upgradeKey === quotaRecharge.SHOP_KEY) {
+    return quotaRecharge.priceForLevel(currentLevel);
+  }
   const tier = item.levels?.[currentLevel];
   if (tier?.price != null) return tier.price;
   const base = item.basePrice ?? item.price ?? 100;
   const growth = item.priceGrowth ?? 1.35;
-  return Math.floor(base * growth ** currentLevel);
+  const lv = Math.max(0, Math.trunc(currentLevel));
+  if (item.procedural || (item.maxLevel != null && item.maxLevel >= 100)) {
+    const tierBoost = 1 + Math.floor(lv / 100) * 0.35;
+    const milestone = lv > 0 && lv % 100 === 0 ? 1.65 : 1;
+    return Math.max(1, Math.floor(base * (growth ** lv) * tierBoost * milestone));
+  }
+  return Math.floor(base * growth ** lv);
 }
 
 function applyLeveledReward(user, item, newLevel) {
+  if (item.procedural === 'recharge') return;
+  if (item.procedural) {
+    profileCosmetics.applyLevel(user, item.procedural, item.upgradeKey || item.id, newLevel);
+    return;
+  }
   const reward = item.levels?.[newLevel - 1];
   if (!reward) return;
 

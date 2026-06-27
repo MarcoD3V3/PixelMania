@@ -3,6 +3,8 @@
 
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d', { alpha: false });
+  const blueprintLayer = document.getElementById('blueprint-layer');
+  const blueprintCtx = blueprintLayer.getContext('2d', { alpha: true });
   const territoryLayer = document.getElementById('territory-layer');
   const tctx = territoryLayer.getContext('2d');
   const minimap = document.getElementById('minimap');
@@ -45,13 +47,22 @@
   const shopItemCountEl = document.getElementById('shop-item-count');
   const tycoonPanel = document.getElementById('tycoon-panel');
   const chiselBadge = document.getElementById('chisel-badge');
+  const brushPanel = document.getElementById('brush-panel');
+  const brushListEl = document.getElementById('brush-list');
+  const brushSizesEl = document.getElementById('brush-sizes');
+  const brushPanelHint = document.getElementById('brush-panel-hint');
+  const toolsLoginHint = document.getElementById('tools-login-hint');
+  const sidebarTabs = document.getElementById('sidebar-tabs');
   const modals = {
     territory: document.getElementById('modal-territory'),
     missions: document.getElementById('modal-missions'),
     shop: document.getElementById('modal-shop'),
+    arcade: document.getElementById('modal-arcade'),
   };
+  let paintZones = [];
+  let arcadeLive = [];
 
-  const MINIMAP_SIZE = 160;
+  const MINIMAP_SIZE = 168;
   const MISSION_ICONS = {
     explorador: '🧭', maraton: '🏃', octantes: '🗺', constancia: '📅',
     artesano: '🎨', conquistador: '👑', cincelador: '⛏', inversor: '💎',
@@ -71,11 +82,12 @@
   const SHOP_ICONS = {
     territory_500: '🏰', territory_2000: '🏯', siege_token: '⚔',
     gadget_heatmap: '🔥', paint_boost: '⚡', brush_corrido: '🖌',
+    pixel_blueprint_token: '🖼',
     zoom_lens: '🔭',
   };
 
   const CHUNK_SIZE = 128;
-  const MINIMAP_RADIUS = 220;
+  const MINIMAP_RADIUS = 480;
 
   let selectedColor = '#000000';
   let availableColors = [...(window.FREE_COLORS || ['#000000', '#FFFFFF'])];
@@ -85,6 +97,8 @@
   let zoomLimitToastAt = 0;
   let offsetX = 0;
   let offsetY = 0;
+  let quotaCooldownSec = 600;
+  let quotaRechargeLevel = 0;
   let quotaEnd = 0;
   let quotaRemaining = 0;
   let quotaMax = 1000;
@@ -107,9 +121,12 @@
   const SHOP_PAGE_SIZE = 36;
   const SHOP_PREVIEW_IN_ALL = 8;
   const chiselLocal = new Map();
+  const CHISEL_STALE_MS = 10_000;
+  let chiselPruneTimer = null;
   let chiselComboTimer = null;
   let territories = [];
   let claimMode = false;
+  let blueprintDragging = false;
   let showTerritoryFrames = false;
   let claimDragging = false;
   let claimStart = null;
@@ -120,9 +137,16 @@
   let drawPointerDown = null;
   const pixelMeta = new Map();
   const pixelChunks = new Map();
+  const pixelColorCache = new Map();
+  const PIXEL_COLOR_CACHE_MAX = 16000;
   let saveViewportTimer = null;
   let renderScheduled = false;
   let minimapScheduled = false;
+  let blueprintLayerKey = '';
+  let blueprintProgressTimer = null;
+  let minimapPanSkip = 0;
+  let blueprintPaletteTimer = null;
+  let blueprintPaletteBound = false;
   let urlCoordsTimer = null;
   let pendingUrlCoord = null;
   let viewportDpr = 1;
@@ -189,7 +213,250 @@
     });
   }
 
-  const socket = io({ withCredentials: true });
+  const socket = io({ withCredentials: true, autoConnect: false });
+
+  function canvasBgColor() {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim();
+    return v || '#1a1a2e';
+  }
+
+  function pruneStaleChiselLocal() {
+    const now = Date.now();
+    let changed = false;
+    for (const [key, prog] of chiselLocal) {
+      if (now - (prog.updatedAt || 0) >= CHISEL_STALE_MS) {
+        chiselLocal.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) scheduleRender();
+  }
+
+  function ensureChiselPruneTimer() {
+    if (chiselPruneTimer) return;
+    chiselPruneTimer = setInterval(pruneStaleChiselLocal, 2000);
+  }
+
+  function applyActiveSkin(user) {
+    if (typeof SkinThemes !== 'undefined') {
+      SkinThemes.applySkin(user?.activeSkin || null);
+    }
+  }
+
+  async function equipSkin(skinId) {
+    try {
+      const res = await fetch('/api/equip-skin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ id: skinId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      currentUser = data.user;
+      renderAuth(data.user);
+      applyActiveSkin(data.user);
+      renderShop(shop, shopCategories);
+      const name = shop.find((s) => s.unlockKey === skinId || s.id === skinId)?.name || 'Skin';
+      showToast(`Skin equipada: ${name}`);
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  function initSidebarTabs() {
+    if (!sidebarTabs) return;
+    const panels = {
+      paint: document.getElementById('tab-paint'),
+      tools: document.getElementById('tab-tools'),
+      blueprint: document.getElementById('tab-blueprint'),
+      profile: document.getElementById('tab-profile'),
+      nav: document.getElementById('tab-nav'),
+    };
+    sidebarTabs.querySelectorAll('.tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.tab;
+        sidebarTabs.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === btn));
+        Object.entries(panels).forEach(([key, panel]) => {
+          if (panel) panel.hidden = key !== id;
+        });
+        if (id === 'blueprint' && typeof PixelBlueprint !== 'undefined') {
+          PixelBlueprint.renderPanel();
+        }
+        if (id === 'profile' && currentUser && typeof ProfileCosmetics !== 'undefined') {
+          ProfileCosmetics.renderProfilePanel(currentUser, document.getElementById('profile-panel'), {
+            onSaved: (data) => { renderAuth(data.user); showToast('Perfil actualizado'); },
+            toast: showToast,
+          });
+        }
+      });
+    });
+  }
+
+  function openShopCategory(catId) {
+    pendingShopCategory = catId || 'dibujo';
+    openModal('shop');
+  }
+
+  initSidebarTabs();
+
+  const COLOR_UNLOCK_START = 32;
+  const COLOR_UNLOCK_MAX = 1_000_000_000;
+
+  function colorUnlockPriceAtClient(n) {
+    const count = Math.max(0, Math.trunc(n));
+    if (count === 0) return COLOR_UNLOCK_START;
+    let price = COLOR_UNLOCK_START;
+    for (let i = 0; i < count; i++) {
+      price += (i % 3 === 0) ? 4 : 3;
+    }
+    return Math.min(COLOR_UNLOCK_MAX, price);
+  }
+
+  async function loadBlueprintConfig() {
+    if (typeof PixelBlueprint === 'undefined') return;
+    const deps = {
+      getUser: () => currentUser,
+      getPalette: () => availableColors,
+      getViewCenter: getViewCenterWorld,
+      getVisibleBounds: getVisibleWorldBounds,
+      getPixelColor: getPlacedPixelColor,
+      forEachPixelInBounds,
+      scheduleRender,
+      toast: showToast,
+      openShop: openShopCategory,
+      goToBlueprint: (x, y) => goToCoords(x, y, scale),
+      onMoveModeChange: (on) => {
+        wrap.classList.toggle('blueprint-move-mode', on);
+      },
+      onUserUpdate: (user) => { if (user) renderAuth(user); },
+      onWallet: (w) => updateWallet(w),
+      colorIsUnlocked: (hex) => colorIsUnlocked(hex),
+      getPremiumColorCount: () => currentUser?.premiumColorCount ?? 0,
+      getSelectedColor: () => selectedColor,
+      getColorPriceAt: (n) => colorUnlockPriceAtClient(n),
+      getNextColorPrice: () => currentUser?.nextColorUnlockPrice ?? colorUnlockPriceAtClient(currentUser?.premiumColorCount ?? 0),
+      onBlueprintPaletteChange: () => buildBlueprintPalette(),
+      renderBlueprintPalette: () => buildBlueprintPalette(),
+      isPanning: () => isPanning,
+      markBlueprintLayerDirty: () => { blueprintLayerKey = ''; },
+    };
+    try {
+      const res = await fetch('/api/config');
+      const data = await res.json();
+      PixelBlueprint.init(deps, data.blueprint || undefined);
+    } catch (_) {
+      PixelBlueprint.init(deps);
+    }
+  }
+
+  async function equipBrush(brush, blockSize, opts = {}) {
+    try {
+      const body = {};
+      if (!opts.keepBrush || brush !== undefined) body.brush = brush;
+      if (blockSize !== undefined) body.blockSize = blockSize;
+      if (opts.mirrorEnabled != null) body.mirrorEnabled = opts.mirrorEnabled;
+      if (opts.mirrorAxis) body.mirrorAxis = opts.mirrorAxis;
+      const res = await fetch('/api/equip-brush', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      currentUser = data.user;
+      renderAuth(data.user);
+      renderBrushesPanel(data.user);
+      showToast('Pincel actualizado');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  function renderBrushesPanel(user) {
+    if (!brushPanel) return;
+    brushPanel.querySelector('.brush-mirror-row')?.remove();
+    if (!user) {
+      brushPanel.hidden = true;
+      if (toolsLoginHint) toolsLoginHint.hidden = false;
+      return;
+    }
+    brushPanel.hidden = false;
+    if (toolsLoginHint) toolsLoginHint.hidden = true;
+    const state = user.brushState || {
+      activeBrush: user.activeBrush || null,
+      activeBlockSize: user.activeBlockSize || 1,
+      unlockedBrushes: [{ key: null, name: 'Píxel único', icon: '▪' }],
+      blockSizes: [1],
+    };
+    const sizes = state.blockSizes || [1];
+    const brushes = state.unlockedBrushes || [{ key: null, name: 'Píxel único', icon: '▪' }];
+    const activeSize = state.activeBlockSize || 1;
+    const activeBrush = state.activeBrush || null;
+    const mirrorOn = Boolean(state.mirrorEnabled);
+    const mirrorAxis = state.mirrorAxis || 'v';
+    const hasMirror = (user.gadgets || []).includes('mirror_brush');
+
+    if (brushPanelHint) {
+      const hasExtra = sizes.length > 1 || brushes.length > 1;
+      brushPanelHint.textContent = hasExtra
+        ? 'Formas en Pintura y Pinceles. Equípalas aquí.'
+        : 'Compra sellos y herramientas en Tienda → Pintura o Pinceles.';
+    }
+
+    if (hasMirror && brushListEl) {
+      const mirrorHtml = `<div class="brush-mirror-row">
+        <button type="button" class="brush-btn${mirrorOn ? ' active' : ''}" data-mirror-toggle="1">🪞 Espejo ${mirrorAxis === 'h' ? 'H' : 'V'}</button>
+        <button type="button" class="brush-btn" data-mirror-axis="toggle" title="Cambiar eje">↔</button>
+      </div>`;
+      brushListEl.insertAdjacentHTML('beforebegin', mirrorHtml);
+      const row = brushPanel.querySelector('.brush-mirror-row');
+      row?.querySelector('[data-mirror-toggle]')?.addEventListener('click', () => {
+        equipBrush(activeBrush, activeSize, { mirrorEnabled: !mirrorOn, mirrorAxis, keepBrush: true });
+      });
+      row?.querySelector('[data-mirror-axis]')?.addEventListener('click', () => {
+        equipBrush(activeBrush, activeSize, { mirrorEnabled: true, mirrorAxis: mirrorAxis === 'h' ? 'v' : 'h', keepBrush: true });
+      });
+    } else {
+      brushPanel?.querySelector('.brush-mirror-row')?.remove();
+    }
+
+    if (brushSizesEl) {
+      brushSizesEl.innerHTML = sizes.map((sz) => (
+        `<button type="button" class="brush-btn${sz === activeSize ? ' active' : ''}" data-brush-size="${sz}">${sz}×${sz}</button>`
+      )).join('');
+      brushSizesEl.querySelectorAll('[data-brush-size]').forEach((btn) => {
+        btn.addEventListener('click', () => equipBrush(activeBrush, Number(btn.dataset.brushSize)));
+      });
+    }
+
+    if (brushListEl) {
+      brushListEl.innerHTML = brushes.map((b) => {
+        const key = b.key == null ? '' : b.key;
+        const isActive = (key || null) === activeBrush && (activeSize === 1 || b.kind === 'stamp' || b.kind === 'pattern' || b.kind === 'bucket');
+        const label = b.icon ? `${b.icon} ${b.name}` : b.name;
+        return `<button type="button" class="brush-btn${isActive ? ' active' : ''}" data-brush-key="${escapeHtml(key)}" title="${escapeHtml(b.desc || '')}">${escapeHtml(label)}</button>`;
+      }).join('');
+      brushListEl.querySelectorAll('[data-brush-key]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.dataset.brushKey || null;
+          equipBrush(key, activeSize);
+        });
+      });
+    }
+  }
+
+  function handleWindowResize() {
+    const rect = wrap.getBoundingClientRect();
+    const centerX = (rect.width / 2 - offsetX) / scale;
+    const centerY = (rect.height / 2 - offsetY) / scale;
+    resizeViewportCanvas();
+    const newRect = wrap.getBoundingClientRect();
+    offsetX = newRect.width / 2 - centerX * scale;
+    offsetY = newRect.height / 2 - centerY * scale;
+    applyTransform();
+  }
 
   function hasBrushCorrido() {
     return Boolean(currentUser?.gadgets?.includes('brush_corrido'));
@@ -213,6 +480,26 @@
     }
   }
 
+  function fmtLevel(n) {
+    const display = Math.max(1, Math.floor(Number(n) || 1));
+    if (typeof NumberFormat !== 'undefined') {
+      return NumberFormat.formatLevel(display);
+    }
+    return String(display);
+  }
+
+  function fmtXp(n) {
+    if (typeof NumberFormat !== 'undefined') {
+      return NumberFormat.formatCompact(n, { threshold: 1_000_000, digits: 2 });
+    }
+    return String(Math.trunc(n));
+  }
+
+  function fmtFull(n) {
+    if (typeof NumberFormat !== 'undefined') return NumberFormat.fullLabel(n);
+    return String(Math.trunc(n));
+  }
+
   function updateTycoonUI(tycoon) {
     const t = tycoon || currentUser?.tycoon;
     if (!tycoonPanel) return;
@@ -226,17 +513,32 @@
     const xpFill = document.getElementById('tycoon-xp-fill');
     const xpText = document.getElementById('tycoon-xp-text');
     const passiveEl = document.getElementById('tycoon-passive');
-    if (lvlEl) lvlEl.textContent = String(t.level + 1);
+    const displayLevel = t.levelDisplay ?? (t.level + 1);
+    if (lvlEl) {
+      lvlEl.textContent = fmtLevel(displayLevel);
+      lvlEl.title = `Nivel exacto: ${fmtFull(displayLevel)}`;
+    }
     if (clicksEl) {
       clicksEl.textContent = t.clicksRequired <= 1 ? '1 clic/celda ✓' : `${t.clicksRequired} clics/celda`;
     }
     const pct = t.xpNext > 0 ? Math.min(100, (t.xpCurrent / t.xpNext) * 100) : 100;
     if (xpFill) xpFill.style.width = `${pct}%`;
-    if (xpText) xpText.textContent = `${t.xpCurrent} / ${t.xpNext} XP`;
+    if (xpText) {
+      const cur = fmtXp(t.xpCurrent);
+      const need = fmtXp(t.xpNext);
+      xpText.textContent = `${cur} / ${need} XP`;
+      const perLvl = t.xpPerLevel ?? t.xpNext;
+      xpText.title = `${fmtFull(t.xpCurrent)} / ${fmtFull(t.xpNext)} XP · Total: ${fmtFull(t.xp ?? 0)} XP · Siguiente nv.: ${fmtFull(perLvl)} XP`;
+    }
     if (passiveEl) {
       if (t.passivePerMin > 0) {
         passiveEl.hidden = false;
-        passiveEl.textContent = `⚡ +${t.passivePerMin}🪙/min mientras no pintas`;
+        const coins = typeof NumberFormat !== 'undefined'
+          ? NumberFormat.formatCompact(t.passivePerMin, { threshold: 1_000_000, digits: 2 })
+          : t.passivePerMin;
+        const idleMin = Math.floor((t.passiveIdleSec || 0) / 60);
+        const idleHint = idleMin >= 1 ? ` · acumulando ${idleMin} min` : ' · deja de pintar 1 min';
+        passiveEl.textContent = `⚡ +${coins}🪙/min idle${idleHint}`;
       } else passiveEl.hidden = true;
     }
     currentUser.tycoon = t;
@@ -354,6 +656,7 @@
       refreshShopData().then(paint);
     }
     if (name === 'territory') updateTerritoryUI();
+    if (name === 'arcade' && typeof Arcade !== 'undefined') Arcade.renderZonesList();
     PMStorage.savePrefs({ color: selectedColor, claimMode, lastModal: name });
   }
 
@@ -388,6 +691,9 @@
 
   function leveledItemPrice(item) {
     const lvl = getShopLevel(item);
+    if (item.procedural === 'recharge' && typeof QuotaRecharge !== 'undefined') {
+      return QuotaRecharge.priceForLevel(lvl);
+    }
     const tier = item.levels?.[lvl];
     if (tier?.price != null) return tier.price;
     const base = item.basePrice ?? item.price ?? 100;
@@ -396,7 +702,13 @@
   }
 
   function leveledMaxLevel(item) {
+    if (item.procedural === 'recharge') return Infinity;
     return item.levels?.length || item.maxLevel || zoomLensMaxLevel;
+  }
+
+  function leveledMaxLabel(item) {
+    const max = leveledMaxLevel(item);
+    return max === Infinity ? '∞' : String(max);
   }
 
   function getShopLevel(item) {
@@ -404,13 +716,28 @@
   }
 
   function getNextLeveledTier(item) {
-    return item.levels?.[getShopLevel(item)] || null;
+    const lvl = getShopLevel(item);
+    if (item.procedural === 'recharge' && typeof QuotaRecharge !== 'undefined') {
+      return QuotaRecharge.previewForLevel(lvl + 1);
+    }
+    if (item.procedural && item.procedural !== 'recharge' && typeof ProfileCosmetics !== 'undefined') {
+      return ProfileCosmetics.tierPreview(item.procedural, lvl + 1);
+    }
+    return item.levels?.[lvl] || null;
   }
 
   function leveledStockLabel(item, lvl) {
     if (item.id === 'zoom_lens') {
       const next = computeZoomLimits(lvl + 1);
       return `Actual nv.${lvl} → nv.${lvl + 1} · alejar ${Math.round(next.minScale * 100)}%`;
+    }
+    if (item.procedural === 'recharge' && typeof QuotaRecharge !== 'undefined') {
+      const next = QuotaRecharge.previewForLevel(lvl + 1);
+      return `Nv.${lvl + 1}: ${next.name}`;
+    }
+    if (item.procedural && typeof ProfileCosmetics !== 'undefined') {
+      const next = ProfileCosmetics.tierPreview(item.procedural, lvl + 1);
+      return `Nv.${lvl + 1}: ${next.name}`;
     }
     const tier = item.levels?.[lvl];
     if (tier) return `Nv.${lvl + 1}: ${tier.name}`;
@@ -484,7 +811,7 @@
     if (item.type === 'leveled') {
       const lvl = getShopLevel(item);
       const max = leveledMaxLevel(item);
-      if (lvl >= max) {
+      if (Number.isFinite(max) && lvl >= max) {
         return { state: 'owned', label: `Nivel máximo (${max})`, stockLabel: null };
       }
       if (!currentUser) return { state: 'locked', label: 'Inicia sesión', stockLabel: null };
@@ -508,15 +835,19 @@
     }
     if (!currentUser) return { state: 'locked', label: 'Inicia sesión', stockLabel: null };
     const coins = currentUser.coins ?? 0;
+    const price = item.type === 'color' ? (currentUser.nextColorUnlockPrice ?? 80) : item.price;
     let stockLabel = null;
     if (item.type === 'item' && item.item) {
       const n = currentUser.inventory?.[item.item] || 0;
       if (n > 0) stockLabel = `En inventario: ${n}`;
     }
-    if (coins < item.price) {
-      return { state: 'poor', label: `Te faltan ${item.price - coins}🪙`, stockLabel };
+    if (item.type === 'color') {
+      stockLabel = `Precio sube por color desbloqueado (${currentUser.premiumColorCount ?? 0} comprados)`;
     }
-    return { state: 'afford', label: null, stockLabel };
+    if (coins < price) {
+      return { state: 'poor', label: `Te faltan ${formatCoinPrice(price - coins)}🪙`, stockLabel, colorPrice: price };
+    }
+    return { state: 'afford', label: null, stockLabel, colorPrice: price };
   }
 
   function countShopInCategory(catId) {
@@ -555,22 +886,7 @@
     const owned = def.level || 0;
     const maxed = def.maxed;
     const canBuy = currentUser && !maxed && (currentUser.coins ?? 0) >= (def.price || 0);
-    let effect = '';
-    if (def.key === 'chisel') {
-      const next = Math.max(1, 10 - owned - 1);
-      effect = maxed ? '1 clic por celda vacía' : `Próximo: ${next} clics/celda`;
-    } else if (def.key === 'quota') {
-      effect = `+${(maxed ? owned : owned + 1) * 120} px por recarga`;
-    } else if (def.key === 'combo') {
-      effect = maxed ? `Combo +${owned} extra` : `Combo +${owned + 1} extra`;
-    } else if (def.key === 'passive') {
-      effect = `${(maxed ? owned : owned + 1) * 3}🪙/min idle`;
-    } else if (def.key === 'coin_mult') {
-      effect = `+${Math.round((maxed ? owned : owned + 1) * 12)}% monedas`;
-    } else if (def.key === 'xp_boost') {
-      effect = `+${Math.round((maxed ? owned : owned + 1) * 20)}% XP`;
-    }
-
+    const effect = def.effectLabel || def.desc || '';
     let action = '';
     if (maxed) action = '<span class="shop-card__owned">Nivel máximo ✓</span>';
     else if (!currentUser) action = '<span class="shop-card__locked">Inicia sesión</span>';
@@ -669,12 +985,15 @@
     if (item.type === 'leveled') {
       const lvl = getShopLevel(item);
       const max = leveledMaxLevel(item);
-      kind = `Mejorable · nv.${lvl}/${max}`;
+      kind = `Mejorable · nv.${lvl}/${leveledMaxLabel(item)}`;
       const next = getNextLeveledTier(item);
       if (next) {
         cardDesc = lvl === 0
-          ? `Primer desbloqueo: ${next.name}.`
-          : `Siguiente nivel: ${next.name}.`;
+          ? `Primer nivel: ${next.desc || next.name}.`
+          : `${next.desc || next.name}`;
+      }
+      if (item.procedural === 'recharge' && typeof QuotaRecharge !== 'undefined' && lvl > 0) {
+        cardDesc = `Ahora: ${QuotaRecharge.formatCooldown(QuotaRecharge.cooldownSecForLevel(lvl))} · ${cardDesc}`;
       }
     }
     const affordClass = status.state === 'afford' ? ' shop-card--can-buy' : '';
@@ -682,7 +1001,25 @@
 
     let action = '';
     if (status.state === 'owned') {
-      action = '<span class="shop-card__owned">Nivel máximo ✓</span>';
+      if (item.type === 'unlock' && String(item.unlockKey || item.id).startsWith('skin_')) {
+        const skinKey = item.unlockKey || item.id;
+        const equipped = currentUser?.activeSkin === skinKey;
+        action = equipped
+          ? '<span class="shop-card__owned">Equipada ✓</span>'
+          : `<button type="button" class="btn btn--sm btn--buy" data-equip-skin="${escapeHtml(skinKey)}">Equipar</button>`;
+      } else if (item.type === 'unlock' && item.category === 'dibujo') {
+        const toolKey = item.unlockKey || item.id;
+        const equipped = currentUser?.activeBrush === toolKey;
+        action = equipped
+          ? '<span class="shop-card__owned">Equipado ✓</span>'
+          : `<button type="button" class="btn btn--sm btn--buy" data-equip-brush="${escapeHtml(toolKey)}">Equipar</button>`;
+      } else if (item.type === 'leveled') {
+        action = '<span class="shop-card__owned">Nivel máximo ✓</span>';
+      } else if (item.type === 'color') {
+        action = `<span class="shop-card__owned">${escapeHtml(status.label)}</span>`;
+      } else {
+        action = '<span class="shop-card__owned">Desbloqueado ✓</span>';
+      }
     } else if (!currentUser) {
       action = '<span class="shop-card__locked">Inicia sesión con Discord</span>';
     } else if (status.state === 'poor') {
@@ -690,15 +1027,21 @@
     } else if (item.type === 'leveled') {
       const price = status.leveledPrice ?? leveledItemPrice(item);
       const lvl = getShopLevel(item);
-      action = `<button type="button" class="btn btn--sm btn--buy" data-buy="${item.id}">${lvl === 0 ? 'Comprar' : 'Subir'} nv.${lvl + 1} · ${price}🪙</button>`;
+      const priceTxt = item.procedural === 'recharge' && typeof QuotaRecharge !== 'undefined'
+        ? QuotaRecharge.fmtPrice(price)
+        : price;
+      action = `<button type="button" class="btn btn--sm btn--buy" data-buy="${item.id}">${lvl === 0 ? 'Comprar' : 'Subir'} nv.${lvl + 1} · ${priceTxt}🪙</button>`;
     } else {
-      action = `<button type="button" class="btn btn--sm btn--buy" data-buy="${item.id}">Comprar · ${item.price}🪙</button>`;
+      const buyPrice = item.type === 'color' ? (status.colorPrice ?? currentUser?.nextColorUnlockPrice ?? item.price) : item.price;
+      action = `<button type="button" class="btn btn--sm btn--buy" data-buy="${item.id}">Comprar · ${formatCoinPrice(buyPrice)}🪙</button>`;
     }
 
     const price = item.type === 'leveled' && status.state !== 'owned'
       ? (status.leveledPrice ?? leveledItemPrice(item))
-      : item.price;
-    const priceLabel = status.state === 'owned' && item.type === 'leveled' ? '' : `${price}🪙`;
+      : item.type === 'color' && status.state !== 'owned'
+        ? (status.colorPrice ?? currentUser?.nextColorUnlockPrice ?? item.price)
+        : item.price;
+    const priceLabel = status.state === 'owned' && item.type === 'leveled' ? '' : `${formatCoinPrice(price)}🪙`;
     const footNote = status.stockLabel || (item.type !== 'leveled' ? item.hint : '');
 
     return `
@@ -783,6 +1126,12 @@
     shopList.querySelectorAll('[data-buy]').forEach((btn) => {
       btn.addEventListener('click', () => buyItem(btn.dataset.buy));
     });
+    shopList.querySelectorAll('[data-equip-skin]').forEach((btn) => {
+      btn.addEventListener('click', () => equipSkin(btn.dataset.equipSkin));
+    });
+    shopList.querySelectorAll('[data-equip-brush]').forEach((btn) => {
+      btn.addEventListener('click', () => equipBrush(btn.dataset.equipBrush, 1));
+    });
     shopList.querySelectorAll('[data-tycoon]').forEach((btn) => {
       btn.addEventListener('click', () => buyTycoonUpgrade(btn.dataset.tycoon));
     });
@@ -816,6 +1165,17 @@
       openModal(btn.dataset.modal);
     });
   });
+  document.querySelectorAll('[data-scroll-to]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = document.getElementById(btn.dataset.scrollTo);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        target.classList.add('map-hud--flash');
+        setTimeout(() => target.classList.remove('map-hud--flash'), 700);
+      }
+      if (typeof Arcade !== 'undefined') Arcade.renderLeaderboard();
+    });
+  });
   document.querySelectorAll('[data-close-modal]').forEach((btn) => {
     btn.addEventListener('click', closeModals);
   });
@@ -823,7 +1183,12 @@
     if (e.target === modalOverlay) closeModals();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.code === 'Escape') closeModals();
+    if (e.code !== 'Escape') return;
+    if (typeof Arcade !== 'undefined' && Arcade.isAnyGameOpen?.()) {
+      Arcade.cancelAny?.();
+      return;
+    }
+    closeModals();
   });
 
   function persistUserState(quota, missionList) {
@@ -855,11 +1220,14 @@
 
   function restoreFromStorage() {
     applyClaimModeUI();
-    if (savedUserCache?.user && !currentUser) {
+    if (savedUserCache?.user) {
+      syncColorAccess(savedUserCache.user);
       renderAuth(savedUserCache.user);
-      if (savedUserCache.quota) updateQuotaUI(savedUserCache.quota);
-      if (savedUserCache.missions) renderMissions(savedUserCache.missions);
     }
+  }
+
+  function hasSessionCookie() {
+    return document.cookie.split(';').some((c) => c.trim().startsWith('pixelmania.sid='));
   }
 
   function metaKey(x, y) { return `${x},${y}`; }
@@ -886,8 +1254,15 @@
 
   function updateWallet(data) {
     if (data.coins != null) {
-      coinsCount.textContent = data.coins;
-      if (currentUser) currentUser.coins = data.coins;
+      const coins = data.coins;
+      if (typeof NumberFormat !== 'undefined' && coins >= 1_000_000) {
+        coinsCount.textContent = NumberFormat.formatCompact(coins, { threshold: 1_000_000, digits: 2 });
+        coinsStat.title = `${fmtFull(coins)} monedas`;
+      } else {
+        coinsCount.textContent = coins;
+        coinsStat.title = '';
+      }
+      if (currentUser) currentUser.coins = coins;
     }
     if (data.territoryPixels != null && currentUser) {
       currentUser.territoryPixels = data.territoryPixels;
@@ -911,9 +1286,16 @@
     quotaRemaining = quota.remaining;
     quotaMax = quota.max;
     quotaEnd = Date.now() + quota.resetIn;
+    quotaCooldownSec = quota.cooldownSec ?? Math.ceil((quota.cooldownMs ?? 600000) / 1000);
+    quotaRechargeLevel = quota.rechargeLevel ?? 0;
     quotaStat.hidden = false;
     quotaCount.textContent = `${quota.remaining}/${quota.max}`;
     cooldownLabel.textContent = quota.max;
+    const cdLabel = typeof QuotaRecharge !== 'undefined'
+      ? QuotaRecharge.formatCooldown(quotaCooldownSec)
+      : `${Math.floor(quotaCooldownSec / 60)} min`;
+    quotaStat.title = `Recarga cada ${cdLabel} · Acelerador nv.${quotaRechargeLevel}`;
+    cooldownStat.title = 'Cuenta atrás segundo a segundo hasta la recarga';
     tickQuota();
     if (quota.remaining <= 0) {
       if (!quotaInterval) quotaInterval = setInterval(tickQuota, 1000);
@@ -935,10 +1317,14 @@
       }
       return;
     }
-    const totalSec = Math.ceil(resetIn / 1000);
+    const totalSec = Math.max(0, Math.floor(resetIn / 1000));
     const m = Math.floor(totalSec / 60);
     const s = totalSec % 60;
-    cooldownTimer.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    if (totalSec < 120) {
+      cooldownTimer.textContent = `${totalSec}s`;
+    } else {
+      cooldownTimer.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
     cooldownStat.className = 'stat waiting';
     if (resetIn <= 0) {
       fetch('/api/me', { credentials: 'include' })
@@ -956,18 +1342,19 @@
       claimPanel.hidden = true;
       PMStorage.saveUser(null);
       if (tycoonPanel) tycoonPanel.hidden = true;
+      if (brushPanel) brushPanel.hidden = true;
+      if (toolsLoginHint) toolsLoginHint.hidden = false;
+      applyActiveSkin(null);
       syncColorAccess(null);
       updateDrawModeHint();
       buildPalette();
+      if (typeof PixelBlueprint !== 'undefined') PixelBlueprint.syncFromUser(null);
       return;
     }
     syncColorAccess(user);
-    authArea.innerHTML = `
-      <div class="user-chip">
-        <img src="${user.avatar}" alt="" class="user-chip__avatar" />
-        <span class="user-chip__name">${escapeHtml(user.username)}</span>
-        <a href="/auth/logout" class="user-chip__logout" title="Cerrar sesión" id="logout-btn">×</a>
-      </div>`;
+    authArea.innerHTML = typeof ProfileCosmetics !== 'undefined'
+      ? ProfileCosmetics.buildUserChipHTML(user)
+      : `<div class="user-chip"><img src="${user.avatar}" alt="" class="user-chip__avatar" /><span class="user-chip__name">${escapeHtml(user.username)}</span><a href="/auth/logout" class="user-chip__logout" title="Cerrar sesión" id="logout-btn">×</a></div>`;
     coinsStat.hidden = false;
     coinsCount.textContent = user.coins ?? 0;
     if (claimColorInput && user.claimColor) claimColorInput.value = user.claimColor;
@@ -976,6 +1363,24 @@
     updateTycoonUI(user?.tycoon);
     buildPalette();
     updateZoomLensUI();
+    applyActiveSkin(user);
+    renderBrushesPanel(user);
+    if (typeof PixelBlueprint !== 'undefined') PixelBlueprint.syncFromUser(user);
+    if (typeof GadgetEffects !== 'undefined') {
+      GadgetEffects.applyGadgetEffects(user, {
+        goToCoords: (x, y) => goToCoords(x, y, scale),
+      });
+    }
+    if (typeof ProfileCosmetics !== 'undefined') ProfileCosmetics.applyCursorAura(user.profile);
+    if (typeof ProfileCosmetics !== 'undefined') {
+      ProfileCosmetics.renderProfilePanel(user, document.getElementById('profile-panel'), {
+        onSaved: (data) => {
+          renderAuth(data.user);
+          showToast('Perfil actualizado');
+        },
+        toast: showToast,
+      });
+    }
     persistUserState();
     updateShopBalance();
     document.getElementById('logout-btn')?.addEventListener('click', () => {
@@ -997,21 +1402,57 @@
       territoryList.innerHTML = '<p class="panel-desc">Aún no hay territorios reclamados.</p>';
       return;
     }
-    territoryList.innerHTML = territories.map((t) => {
-      const own = currentUser && t.ownerId === currentUser.id;
-      const siege = t.underSiege ? `<span class="siege-badge">⚔ Asedio</span>` : '';
-      const btn = !own && currentUser
-        ? `<button type="button" class="btn btn--sm btn--siege" data-siege="${t.id}">Asediar (75🪙)</button>`
-        : '';
-      return `<div class="territory-item" style="--clan-color:${t.color}">
-        <span>${escapeHtml(t.ownerName)}</span>
-        <span class="territory-item__size">${t.w}×${t.h} · ${t.w * t.h}px</span>
-        ${siege}${btn}
-      </div>`;
-    }).join('');
+    const own = currentUser
+      ? territories.filter((t) => territoryOwnerId(t) === currentUser.id)
+      : [];
+    let html = '';
+    if (own.length) {
+      html += `<p class="panel-desc territory-own-hint">Tus ${own.length} zona${own.length === 1 ? '' : 's'} están guardadas. Pulsa <strong>Ir</strong> para centrar el mapa.</p>`;
+      html += own.map((t) => {
+        const siege = t.underSiege ? '<span class="siege-badge">⚔ Asedio</span>' : '';
+        return `<div class="territory-item territory-item--own" style="--clan-color:${t.color}">
+          <div class="territory-item__main">
+            <span>Tu zona</span>
+            <span class="territory-item__size">${t.w}×${t.h} · (${t.x}, ${t.y})</span>
+          </div>
+          <div class="territory-item__actions">
+            ${siege}
+            <button type="button" class="btn btn--sm btn--ghost" data-goto-territory="${t.id}">📍 Ir</button>
+          </div>
+        </div>`;
+      }).join('');
+      const others = territories.filter((t) => territoryOwnerId(t) !== currentUser.id);
+      if (others.length) html += '<p class="panel-desc territory-others-label">Otros jugadores</p>';
+      html += others.map(renderTerritoryListItem).join('');
+    } else {
+      html = territories.map(renderTerritoryListItem).join('');
+    }
+    territoryList.innerHTML = html;
     territoryList.querySelectorAll('[data-siege]').forEach((btn) => {
       btn.addEventListener('click', () => startSiege(btn.dataset.siege));
     });
+    territoryList.querySelectorAll('[data-goto-territory]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const t = territories.find((x) => x.id === btn.dataset.gotoTerritory);
+        if (t) {
+          goToTerritory(t);
+          showToast(`Centrado en tu zona (${t.x}, ${t.y})`);
+        }
+      });
+    });
+  }
+
+  function renderTerritoryListItem(t) {
+    const own = currentUser && territoryOwnerId(t) === currentUser.id;
+    const siege = t.underSiege ? `<span class="siege-badge">⚔ Asedio</span>` : '';
+    const btn = !own && currentUser
+      ? `<button type="button" class="btn btn--sm btn--siege" data-siege="${t.id}">Asediar (75🪙)</button>`
+      : (own ? `<button type="button" class="btn btn--sm btn--ghost" data-goto-territory="${t.id}">📍 Ir</button>` : '');
+    return `<div class="territory-item${own ? ' territory-item--own' : ''}" style="--clan-color:${t.color}">
+      <span>${escapeHtml(t.ownerName)}</span>
+      <span class="territory-item__size">${t.w}×${t.h} · (${t.x}, ${t.y})</span>
+      ${siege}${btn}
+    </div>`;
   }
 
   async function startSiege(zoneId) {
@@ -1078,10 +1519,26 @@
         const bought = shop.find((s) => s.id === id);
         if (bought?.type === 'leveled') {
           const lvl = getShopLevel(bought);
-          const tier = bought.levels?.[lvl - 1];
-          showToast(tier ? `¡Nv.${lvl} desbloqueado: ${tier.name}!` : `¡Nivel ${lvl} desbloqueado!`);
+          let msg = `¡Nv.${lvl} desbloqueado!`;
+          if (bought.procedural === 'recharge' && typeof QuotaRecharge !== 'undefined') {
+            const t = QuotaRecharge.previewForLevel(lvl);
+            msg = `⏳ Nv.${lvl}: recarga ${QuotaRecharge.formatCooldown(t.cooldownSec)}`;
+            if (data.quota) updateQuotaUI(data.quota);
+          } else if (bought.procedural && typeof ProfileCosmetics !== 'undefined') {
+            const t = ProfileCosmetics.tierPreview(bought.procedural, lvl);
+            msg = `¡Nv.${lvl}: ${t.name}!`;
+          } else {
+            const tier = bought.levels?.[lvl - 1];
+            if (tier) msg = `¡Nv.${lvl} desbloqueado: ${tier.name}!`;
+          }
+          showToast(msg);
+          renderBrushesPanel(data.user);
         } else if (bought?.type === 'color') {
           showToast(`Color ${bought.hex} añadido a tu paleta`);
+        } else if (bought?.type === 'unlock' && String(bought.unlockKey).startsWith('skin_')) {
+          showToast('¡Skin comprada y equipada!');
+        } else if (bought?.type === 'unlock' && bought.category === 'dibujo') {
+          showToast(`¡${bought.name} equipado! Úsalo en el panel Pinceles.`);
         } else showToast('¡Compra exitosa!');
       }
     } catch (err) {
@@ -1115,6 +1572,111 @@
     }
   });
 
+  function formatCoinPrice(n) {
+    const v = Math.max(0, Math.floor(Number(n) || 0));
+    if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(v % 1_000_000_000 === 0 ? 0 : 1)}B`;
+    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v % 1_000_000 === 0 ? 0 : 1)}M`;
+    if (v >= 10_000) return `${Math.round(v / 1000)}k`;
+    return v.toLocaleString();
+  }
+
+  async function buyColorUnlock(hex) {
+    if (!currentUser) return showToast('Inicia sesión con Discord', true);
+    const h = String(hex || '').trim().toUpperCase();
+    if (!/^#[0-9A-F]{6}$/.test(h)) return;
+    if (colorIsUnlocked(h)) {
+      selectColor(h);
+      return;
+    }
+    const price = currentUser.nextColorUnlockPrice ?? colorUnlockPriceAtClient(currentUser.premiumColorCount ?? 0);
+    if (!confirm(`Desbloquear ${h} por ${formatCoinPrice(price)} 🪙?\nLlevas ${currentUser.premiumColorCount ?? 0} colores premium · el siguiente sube de precio.`)) return;
+    try {
+      const res = await fetch('/api/colors/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ hex: h }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo comprar');
+      if (data.user) renderAuth(data.user);
+      selectColor(h);
+      showToast(`Color ${h} desbloqueado (${formatCoinPrice(data.price)} 🪙)`);
+      buildPalette();
+      buildBlueprintPalette();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  function buildBlueprintPalette() {
+    clearTimeout(blueprintPaletteTimer);
+    blueprintPaletteTimer = setTimeout(buildBlueprintPaletteNow, 150);
+  }
+
+  function bindBlueprintPaletteEvents() {
+    if (blueprintPaletteBound) return;
+    blueprintPaletteBound = true;
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-bp-color]');
+      if (!btn) return;
+      const hex = btn.dataset.bpColor;
+      if (!hex) return;
+      if (!colorIsUnlocked(hex)) {
+        buyColorUnlock(hex);
+        return;
+      }
+      PixelBlueprint.setFocusColor(hex, { force: true });
+      selectColor(hex);
+      buildBlueprintPalette();
+    });
+  }
+
+  function buildBlueprintPaletteNow() {
+    const roots = [
+      document.getElementById('blueprint-paint-palette'),
+      document.getElementById('blueprint-paint-palette-side'),
+    ].filter(Boolean);
+    const sidePanel = document.getElementById('blueprint-palette-panel');
+    const info = typeof PixelBlueprint !== 'undefined' ? PixelBlueprint.getBlueprintPaletteInfo?.() : null;
+    const active = typeof PixelBlueprint !== 'undefined' && PixelBlueprint.getActive?.()?.visible !== false && info?.length;
+    if (sidePanel) sidePanel.hidden = !active;
+    if (!roots.length || !active) {
+      roots.forEach((el) => { el.innerHTML = ''; });
+      return;
+    }
+    const focus = PixelBlueprint.getFocusColor?.();
+    const html = info.map((item) => {
+      const done = item.remaining <= 0;
+      const locked = !item.owned;
+      const cls = [
+        'bp-paint-swatch',
+        item.focused || focus === item.hex ? 'bp-paint-swatch--focus' : '',
+        locked ? 'bp-paint-swatch--locked' : '',
+        done ? 'bp-paint-swatch--done' : '',
+      ].filter(Boolean).join(' ');
+      const label = locked
+        ? (item.isNextUnlock
+          ? `🔒 ${formatCoinPrice(item.price)}🪙`
+          : `↗ ${formatCoinPrice(item.price)}🪙`)
+        : `${item.remaining.toLocaleString()} px`;
+      const priceHint = locked
+        ? (item.isNextUnlock
+          ? ' · Precio actual (sube con cada compra)'
+          : ' · Precio futuro si compras los anteriores')
+        : '';
+      return `<button type="button" class="${cls}" data-bp-color="${item.hex}" style="--sw:${item.hex}" title="${item.hex} · ${item.count.toLocaleString()} celdas${priceHint}">
+        <span class="bp-paint-swatch__chip"></span>
+        <span class="bp-paint-swatch__meta">${label}</span>
+      </button>`;
+    }).join('');
+    roots.forEach((el) => {
+      el.innerHTML = html;
+    });
+  }
+
+  bindBlueprintPaletteEvents();
+
   function buildPalette() {
     paletteEl.innerHTML = '';
     const premium = new Set((currentUser?.unlockedColors || []).map((c) => String(c).toUpperCase()));
@@ -1138,6 +1700,7 @@
       paletteEl.appendChild(btn);
     });
     updateCustomColorUI();
+    buildBlueprintPalette();
   }
 
   function selectColor(color, btnEl) {
@@ -1159,7 +1722,29 @@
       if (match) match.classList.add('selected');
     }
     cursorPreview.style.background = selectedColor;
+    if (typeof PixelBlueprint !== 'undefined') {
+      PixelBlueprint.syncFocusFromSelectedColor?.(selectedColor);
+    }
     persistPrefs();
+  }
+
+  /** Oculta píxeles del mapa dentro del plano cuando hay color enfocado (solo se ve la guía). */
+  function maskBlueprintFocusInterior(ctx, dpr) {
+    if (typeof PixelBlueprint === 'undefined' || !PixelBlueprint.isFocusPaintMode?.()) return;
+    const bp = PixelBlueprint.getActive?.();
+    if (!bp || bp.visible === false) return;
+    const { x0, y0, x1, y1 } = getVisibleWorldBounds();
+    const bx0 = Math.max(bp.originX, x0);
+    const by0 = Math.max(bp.originY, y0);
+    const bx1 = Math.min(bp.originX + bp.width, x1);
+    const by1 = Math.min(bp.originY + bp.height, y1);
+    if (bx1 <= bx0 || by1 <= by0) return;
+    const dx = (bx0 * scale + offsetX) * dpr;
+    const dy = (by0 * scale + offsetY) * dpr;
+    const dw = (bx1 - bx0) * scale * dpr;
+    const dh = (by1 - by0) * scale * dpr;
+    ctx.fillStyle = canvasBgColor();
+    ctx.fillRect(dx, dy, dw, dh);
   }
 
   function updateCustomColorUI() {
@@ -1232,21 +1817,67 @@
 
   function initCanvas() {
     pixelChunks.clear();
+    initMinimapCanvas();
     resizeViewportCanvas();
     applyTransform();
   }
 
+  function effectiveViewportDpr() {
+    const raw = window.devicePixelRatio || 1;
+    if (scale >= 32) return Math.min(raw, 1);
+    if (scale >= 20) return Math.min(raw, 1.25);
+    if (scale >= 12) return Math.min(raw, 1.5);
+    return Math.min(raw, 2);
+  }
+
   function resizeViewportCanvas() {
     const rect = wrap.getBoundingClientRect();
-    viewportDpr = Math.min(window.devicePixelRatio || 1, 2);
+    viewportDpr = effectiveViewportDpr();
     const cw = Math.max(1, Math.floor(rect.width * viewportDpr));
     const ch = Math.max(1, Math.floor(rect.height * viewportDpr));
     if (canvas.width !== cw || canvas.height !== ch) {
       canvas.width = cw;
       canvas.height = ch;
+      blueprintLayer.width = cw;
+      blueprintLayer.height = ch;
       territoryLayer.width = cw;
       territoryLayer.height = ch;
+      blueprintLayerKey = '';
     }
+  }
+
+  function renderBlueprintLayer() {
+    if (!blueprintCtx || typeof PixelBlueprint === 'undefined') return;
+    const dpr = viewportDpr;
+    const active = PixelBlueprint.getActive?.();
+    const draft = PixelBlueprint.getDraft?.();
+    const hasOverlay = (active && active.visible !== false) || draft?.cells?.length;
+    const layerKey = hasOverlay
+      ? `${scale}|${offsetX}|${offsetY}|${dpr}|${PixelBlueprint.getLayerKey?.() || ''}`
+      : 'empty';
+    if (layerKey === blueprintLayerKey) return;
+    blueprintLayerKey = layerKey;
+    blueprintCtx.setTransform(1, 0, 0, 1, 0, 0);
+    blueprintCtx.clearRect(0, 0, blueprintLayer.width, blueprintLayer.height);
+    if (!hasOverlay) return;
+    PixelBlueprint.drawOverlay(blueprintCtx, scale, offsetX, offsetY, dpr);
+    PixelBlueprint.drawDraftOverlay(blueprintCtx, scale, offsetX, offsetY, dpr);
+  }
+
+  /** Dibuja solo la porción visible del chunk (evita escalar 128×128 a miles de px en zoom alto). */
+  function drawChunkVisible(ctx, chunk, wx, wy, visX0, visY0, visX1, visY1, dpr) {
+    const lx0 = Math.max(0, Math.floor(visX0 - wx));
+    const ly0 = Math.max(0, Math.floor(visY0 - wy));
+    const lx1 = Math.min(CHUNK_SIZE, Math.ceil(visX1 - wx));
+    const ly1 = Math.min(CHUNK_SIZE, Math.ceil(visY1 - wy));
+    const srcW = lx1 - lx0;
+    const srcH = ly1 - ly0;
+    if (srcW <= 0 || srcH <= 0) return;
+    const dx = ((wx + lx0) * scale + offsetX) * dpr;
+    const dy = ((wy + ly0) * scale + offsetY) * dpr;
+    const dw = srcW * scale * dpr;
+    const dh = srcH * scale * dpr;
+    ctx.drawImage(chunk.canvas, lx0, ly0, srcW, srcH, dx, dy, dw, dh);
   }
 
   function scheduleRender() {
@@ -1255,8 +1886,11 @@
     requestAnimationFrame(() => {
       renderScheduled = false;
       renderViewport();
-      renderMinimapViewport();
-      updateCursorPreview(lastMouse.x, lastMouse.y);
+      renderBlueprintLayer();
+      if (!isPanning || ++minimapPanSkip % 3 === 0) {
+        renderMinimapViewport();
+      }
+      if (!isPanning) updateCursorPreview(lastMouse.x, lastMouse.y);
       positionClaimPreview();
     });
   }
@@ -1293,7 +1927,7 @@
     const dpr = viewportDpr;
     const { x0, y0, x1, y1 } = getVisibleWorldBounds();
 
-    ctx.fillStyle = '#1a1a2e';
+    ctx.fillStyle = canvasBgColor();
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     tctx.clearRect(0, 0, territoryLayer.width, territoryLayer.height);
 
@@ -1309,26 +1943,81 @@
         if (!chunk) continue;
         const wx = cx * CHUNK_SIZE;
         const wy = cy * CHUNK_SIZE;
-        const dx = (wx * scale + offsetX) * dpr;
-        const dy = (wy * scale + offsetY) * dpr;
-        const dw = CHUNK_SIZE * scale * dpr;
-        const dh = CHUNK_SIZE * scale * dpr;
-        ctx.drawImage(chunk.canvas, dx, dy, dw, dh);
+        if (scale >= 8) {
+          drawChunkVisible(ctx, chunk, wx, wy, x0, y0, x1, y1, dpr);
+        } else {
+          const dx = (wx * scale + offsetX) * dpr;
+          const dy = (wy * scale + offsetY) * dpr;
+          const dw = CHUNK_SIZE * scale * dpr;
+          const dh = CHUNK_SIZE * scale * dpr;
+          ctx.drawImage(chunk.canvas, dx, dy, dw, dh);
+        }
       }
     }
 
     drawOriginGuides(dpr);
     drawChiselOverlays(dpr);
+    maskBlueprintFocusInterior(ctx, dpr);
+    drawZoomGrid(dpr);
 
     if (showTerritoryFrames) {
-      drawMergedTerritoryOutlines(tctx, scale * dpr, scale * dpr, offsetX * dpr, offsetY * dpr, { normal: 0.22, siege: 0.4 });
+      const boosted = typeof GadgetEffects !== 'undefined'
+        && GadgetEffects.hasGadget(currentUser, 'territory_highlight');
+      drawMergedTerritoryOutlines(
+        tctx, scale * dpr, scale * dpr, offsetX * dpr, offsetY * dpr,
+        boosted ? { normal: 0.38, siege: 0.58 } : { normal: 0.22, siege: 0.4 },
+      );
+    }
+    drawPaintZones(dpr);
+  }
+
+  function drawPaintZones(dpr) {
+    if (!paintZones.length) return;
+    const { x0, y0, x1, y1 } = getVisibleWorldBounds();
+    for (const z of paintZones) {
+      if (z.x + z.w < x0 || z.x > x1 || z.y + z.h < y0 || z.y > y1) continue;
+      const dx = (z.x * scale + offsetX) * dpr;
+      const dy = (z.y * scale + offsetY) * dpr;
+      const dw = z.w * scale * dpr;
+      const dh = z.h * scale * dpr;
+      tctx.strokeStyle = z.color || '#ffbe0b';
+      tctx.globalAlpha = 0.55;
+      tctx.lineWidth = 2 * dpr;
+      tctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
+      tctx.globalAlpha = 0.08;
+      tctx.fillStyle = z.color || '#ffbe0b';
+      tctx.fillRect(dx, dy, dw, dh);
+      if (z.game && dw >= 28) {
+        tctx.globalAlpha = 0.85;
+        tctx.fillStyle = '#fff';
+        tctx.font = `${Math.min(11 * dpr, 14)}px system-ui,sans-serif`;
+        tctx.fillText('🎮', dx + 3 * dpr, dy + 12 * dpr);
+      }
+      tctx.globalAlpha = 1;
+    }
+    for (const p of arcadeLive) {
+      const z = paintZones.find((zz) => zz.id === p.zoneId);
+      if (!z) continue;
+      if (z.x + z.w < x0 || z.x > x1 || z.y + z.h < y0 || z.y > y1) continue;
+      const dx = ((z.x + z.w / 2) * scale + offsetX) * dpr;
+      const dy = ((z.y - 1) * scale + offsetY) * dpr;
+      const label = `${p.username}: ${p.score}`;
+      tctx.font = `${Math.min(10 * dpr, 12)}px system-ui,sans-serif`;
+      tctx.fillStyle = 'rgba(0,0,0,0.65)';
+      const tw = tctx.measureText(label).width + 8 * dpr;
+      tctx.fillRect(dx - tw / 2, dy - 14 * dpr, tw, 14 * dpr);
+      tctx.fillStyle = '#06ffa5';
+      tctx.fillText(label, dx - tw / 2 + 4 * dpr, dy - 4 * dpr);
     }
   }
 
   function drawChiselOverlays(dpr) {
     if (!chiselLocal.size) return;
+    const { x0, y0, x1, y1 } = getVisibleWorldBounds();
+    const pad = 1;
     for (const [key, prog] of chiselLocal) {
       const [x, y] = key.split(',').map(Number);
+      if (x < x0 - pad || x > x1 + pad || y < y0 - pad || y > y1 + pad) continue;
       const alpha = 0.12 + (prog.current / prog.required) * 0.5;
       ctx.fillStyle = hexToRgba(prog.color, alpha);
       const dx = (x * scale + offsetX) * dpr;
@@ -1347,6 +2036,135 @@
     });
   }
 
+  function parseUrlNavigation() {
+    const params = new URLSearchParams(location.search);
+    const xStr = params.get('x');
+    const yStr = params.get('y');
+    if (xStr == null || xStr === '' || yStr == null || yStr === '') return null;
+    const x = Number(xStr);
+    const y = Number(yStr);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    let z = null;
+    const zStr = params.get('z');
+    if (zStr != null && zStr !== '') {
+      z = Number(zStr);
+      if (!Number.isFinite(z)) z = null;
+      else if (z > 100) z = z / 100;
+    }
+    return { x, y, z };
+  }
+
+  function whenLayoutReady(fn) {
+    requestAnimationFrame(() => requestAnimationFrame(fn));
+  }
+
+  function applyUrlNavigation() {
+    const nav = parseUrlNavigation();
+    if (!nav) return false;
+    goToCoords(nav.x, nav.y, nav.z);
+    hoverCoord = { x: Math.trunc(nav.x), y: Math.trunc(nav.y) };
+    if (coordDisplay) coordDisplay.textContent = `(${hoverCoord.x}, ${hoverCoord.y})`;
+    return true;
+  }
+
+  function restoreInitialViewport(spawn) {
+    whenLayoutReady(() => {
+      if (applyUrlNavigation()) return;
+      if (savedViewport?.x != null && savedViewport?.y != null) {
+        goToCoords(
+          savedViewport.x,
+          savedViewport.y,
+          savedViewport.scale != null ? savedViewport.scale : null,
+        );
+        hoverCoord = { x: savedViewport.x, y: savedViewport.y };
+        if (coordDisplay) coordDisplay.textContent = `(${savedViewport.x}, ${savedViewport.y})`;
+      } else if (savedViewport?.scale != null || savedViewport?.offsetX != null) {
+        if (savedViewport.scale) scale = savedViewport.scale;
+        if (savedViewport.offsetX != null) offsetX = savedViewport.offsetX;
+        if (savedViewport.offsetY != null) offsetY = savedViewport.offsetY;
+        applyTransform();
+      } else {
+        const own = currentUser?.id
+          ? territories.filter((t) => territoryOwnerId(t) === currentUser.id)
+          : [];
+        if (own.length) {
+          const latest = own.reduce((a, b) => ((a.claimedAt || 0) > (b.claimedAt || 0) ? a : b));
+          goToCoords(latest.x + latest.w / 2, latest.y + latest.h / 2, 4);
+        } else {
+          goToCoords(spawn?.x ?? 0, spawn?.y ?? 0, 4);
+        }
+      }
+    });
+  }
+
+  function goToTerritory(t) {
+    if (!t) return;
+    const cx = t.x + t.w / 2;
+    const cy = t.y + t.h / 2;
+    goToCoords(cx, cy, scale);
+    hoverCoord = { x: Math.trunc(cx), y: Math.trunc(cy) };
+    if (coordDisplay) coordDisplay.textContent = `(${hoverCoord.x}, ${hoverCoord.y})`;
+  }
+
+  /** Solo píxeles colocados por jugadores (pixelMeta). Usado por el plano para errores/progreso. */
+  function getPlacedPixelColor(x, y) {
+    const meta = pixelMeta.get(metaKey(x, y));
+    return meta?.c ? String(meta.c).toUpperCase() : null;
+  }
+
+  function getPixelColorAt(x, y) {
+    const placed = getPlacedPixelColor(x, y);
+    if (placed) return placed;
+    const key = metaKey(x, y);
+    const cx = chunkCoord(x);
+    const cy = chunkCoord(y);
+    const chunk = pixelChunks.get(chunkKey(cx, cy));
+    if (!chunk) return null;
+    const lx = x - cx * CHUNK_SIZE;
+    const ly = y - cy * CHUNK_SIZE;
+    const d = chunk.ctx.getImageData(lx, ly, 1, 1).data;
+    const bg = canvasBgColor().toUpperCase();
+    const hex = `#${[d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join('')}`.toUpperCase();
+    if (hex === bg || hex === '#1A1A2E') return null;
+    if (d[3] === 0) return null;
+    return hex;
+  }
+
+  function forEachPixelInBounds(x0, y0, x1, y1, fn) {
+    const minX = Math.min(x0, x1);
+    const maxX = Math.max(x0, x1);
+    const minY = Math.min(y0, y1);
+    const maxY = Math.max(y0, y1);
+    for (const [key] of pixelMeta) {
+      const [x, y] = key.split(',').map(Number);
+      if (x < minX || x > maxX || y < minY || y > maxY) continue;
+      fn(x, y);
+    }
+  }
+
+  function drawZoomGrid(dpr) {
+    if (isPanning) return;
+    if (!document.body.classList.contains('gadget-zoom-grid')) return;
+    const step = scale >= 12 ? 1 : scale >= 6 ? 2 : scale >= 3 ? 5 : 10;
+    const { x0, y0, x1, y1 } = getVisibleWorldBounds();
+    const gx0 = Math.floor(x0 / step) * step;
+    const gy0 = Math.floor(y0 / step) * step;
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = gx0; x <= x1; x += step) {
+      const sx = (x * scale + offsetX) * dpr;
+      ctx.moveTo(sx, 0);
+      ctx.lineTo(sx, canvas.height);
+    }
+    for (let y = gy0; y <= y1; y += step) {
+      const sy = (y * scale + offsetY) * dpr;
+      ctx.moveTo(0, sy);
+      ctx.lineTo(canvas.width, sy);
+    }
+    ctx.stroke();
+  }
+
   function goToCoords(x, y, z) {
     const rect = wrap.getBoundingClientRect();
     if (z != null) scale = clampScale(Number(z));
@@ -1361,14 +2179,21 @@
     params.set('x', x);
     params.set('y', y);
     params.set('z', Math.round(scale * 10) / 10);
-    history.replaceState(null, '', `?${params}`);
+    history.replaceState(null, '', `${location.pathname}?${params}`);
     PMStorage.saveViewport({ scale, offsetX, offsetY, x, y });
   }
 
   function copyCoordLink() {
-    const { x, y } = hoverCoord;
-    const url = `${location.origin}${location.pathname}?x=${x}&y=${y}&z=${Math.round(scale * 10) / 10}`;
+    const x = Math.trunc(hoverCoord.x);
+    const y = Math.trunc(hoverCoord.y);
+    const z = Math.round(scale * 10) / 10;
+    const url = `${location.origin}${location.pathname}?x=${x}&y=${y}&z=${z}`;
     navigator.clipboard.writeText(url).then(() => showToast('Enlace copiado'));
+    const params = new URLSearchParams(location.search);
+    params.set('x', String(x));
+    params.set('y', String(y));
+    params.set('z', String(z));
+    history.replaceState(null, '', `${location.pathname}?${params}`);
   }
 
   document.getElementById('copy-link').addEventListener('click', copyCoordLink);
@@ -1421,11 +2246,17 @@
       scheduleMinimapRedraw();
       scheduleRender();
     }
+    if (typeof PixelBlueprint !== 'undefined') {
+      PixelBlueprint.onPixelPlaced?.(x, y);
+      clearTimeout(blueprintProgressTimer);
+      blueprintProgressTimer = setTimeout(() => PixelBlueprint.updateProgressFromMap(), 220);
+    }
   }
 
   function loadPixels(pixels) {
     pixelMeta.clear();
     pixelChunks.clear();
+    pixelColorCache.clear();
     for (const p of pixels) {
       setPixel(p.x, p.y, p.c, p, true);
     }
@@ -1580,6 +2411,7 @@
     const span = r * 2;
     const sx = MINIMAP_SIZE / span;
 
+    minimapBaseCtx.setTransform(1, 0, 0, 1, 0, 0);
     minimapBaseCtx.fillStyle = '#1a1a2e';
     minimapBaseCtx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
 
@@ -1588,14 +2420,22 @@
     const pyMin = center.y - r;
     const pyMax = center.y + r;
 
+    const heatmap = typeof GadgetEffects !== 'undefined' && GadgetEffects.hasGadget(currentUser, 'heatmap');
     for (const [key, meta] of pixelMeta) {
       const [px, py] = key.split(',').map(Number);
       if (px < pxMin || px > pxMax || py < pyMin || py > pyMax) continue;
       const mx = (px - center.x + r) * sx;
       const my = (py - center.y + r) * sx;
       minimapBaseCtx.fillStyle = meta.c || '#ffffff';
-      minimapBaseCtx.fillRect(Math.floor(mx), Math.floor(my), Math.max(1, Math.ceil(sx)), Math.max(1, Math.ceil(sy)));
+      if (heatmap) {
+        minimapBaseCtx.globalAlpha = 1;
+        minimapBaseCtx.fillRect(Math.floor(mx), Math.floor(my), Math.max(2, Math.ceil(sx * 1.2)), Math.max(2, Math.ceil(sx * 1.2)));
+        minimapBaseCtx.globalAlpha = 1;
+      } else {
+        minimapBaseCtx.fillRect(Math.floor(mx), Math.floor(my), Math.max(1, Math.ceil(sx)), Math.max(1, Math.ceil(sx)));
+      }
     }
+    minimapBaseCtx.globalAlpha = 1;
 
     if (showTerritoryFrames) {
       drawMergedTerritoryOutlines(
@@ -1614,20 +2454,40 @@
     renderMinimapViewport();
   }
 
+  function initMinimapCanvas() {
+    minimap.width = MINIMAP_SIZE;
+    minimap.height = MINIMAP_SIZE;
+    minimapBase.width = MINIMAP_SIZE;
+    minimapBase.height = MINIMAP_SIZE;
+  }
+
   function renderMinimapViewport() {
-    minimapCtx.drawImage(minimapBase, 0, 0);
+    const w = MINIMAP_SIZE;
+    const h = MINIMAP_SIZE;
+    minimapCtx.setTransform(1, 0, 0, 1, 0, 0);
+    minimapCtx.clearRect(0, 0, w, h);
+    minimapCtx.drawImage(minimapBase, 0, 0, w, h);
+
     const center = getViewCenterWorld();
     const r = MINIMAP_RADIUS;
     const span = r * 2;
-    const sx = MINIMAP_SIZE / span;
+    const sx = w / span;
     const { x0, y0, x1, y1 } = getVisibleWorldBounds();
-    const vx = (x0 - center.x + r) * sx;
-    const vy = (y0 - center.y + r) * sx;
-    const vw = (x1 - x0) * sx;
-    const vh = (y1 - y0) * sx;
-    minimapCtx.strokeStyle = 'rgba(124, 58, 237, 0.9)';
-    minimapCtx.lineWidth = 1.5;
-    minimapCtx.strokeRect(vx, vy, vw, vh);
+    let vx = (x0 - center.x + r) * sx;
+    let vy = (y0 - center.y + r) * sx;
+    let vw = (x1 - x0) * sx;
+    let vh = (y1 - y0) * sx;
+    if (!Number.isFinite(vx) || !Number.isFinite(vy) || !Number.isFinite(vw) || !Number.isFinite(vh)) return;
+    if (vw < 0.5 || vh < 0.5) return;
+
+    vx = Math.max(0, Math.min(w - 1, vx));
+    vy = Math.max(0, Math.min(h - 1, vy));
+    vw = Math.max(1, Math.min(w - vx, vw));
+    vh = Math.max(1, Math.min(h - vy, vh));
+
+    minimapCtx.strokeStyle = 'rgba(124, 58, 237, 0.85)';
+    minimapCtx.lineWidth = 1;
+    minimapCtx.strokeRect(vx + 0.5, vy + 0.5, vw - 1, vh - 1);
   }
 
   const lastMouse = { x: 0, y: 0 };
@@ -1709,15 +2569,25 @@
 
     const terr = territories.find((t) => x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h);
 
-    let body = `<span class="pixel-card__name">${escapeHtml(meta.n)}</span>`;
+    let terrHtml = '';
     if (terr) {
-      body += `<span class="pixel-card__zone" style="color:${terr.color || terr.clanColor}">${terr.underSiege ? '⚔ ' : '🛡 '}${escapeHtml(terr.ownerName || terr.clanName)}</span>`;
+      terrHtml = `<span class="pixel-card__zone" style="color:${terr.color || terr.clanColor}">${terr.underSiege ? '⚔ ' : '🛡 '}${escapeHtml(terr.ownerName || terr.clanName)}</span>`;
     }
 
-    pixelCard.innerHTML = `
-      <img class="pixel-card__avatar" src="${meta.a}" alt="" />
-      <div class="pixel-card__body">${body}<span class="pixel-card__coords">${x}, ${y}</span></div>
-      <span class="pixel-card__color" style="background:${meta.c}"></span>`;
+    if (typeof ProfileCosmetics !== 'undefined') {
+      const built = ProfileCosmetics.buildPixelCardHTML(meta, x, y, terrHtml);
+      pixelCard.className = 'pixel-card' + (built.cos ? ' pixel-card--styled' : '');
+      if (built.cos) pixelCard.style.cssText = ProfileCosmetics.cssVars(built.cos);
+      else pixelCard.style.cssText = '';
+      pixelCard.innerHTML = built.html;
+    } else {
+      let body = `<span class="pixel-card__name">${escapeHtml(meta.n)}</span>`;
+      if (terrHtml) body += terrHtml;
+      pixelCard.innerHTML = `
+        <img class="pixel-card__avatar" src="${meta.a}" alt="" />
+        <div class="pixel-card__body">${body}<span class="pixel-card__coords">${x}, ${y}</span></div>
+        <span class="pixel-card__color" style="background:${meta.c}"></span>`;
+    }
 
     pixelCard.hidden = false;
     let left = sx + 14, top = sy + 14;
@@ -1746,7 +2616,13 @@
       buildPalette();
       return;
     }
-    socket.emit('place_pixel', { x: px, y: py, color });
+    socket.emit('place_pixel', {
+      x: px,
+      y: py,
+      color,
+      brush: currentUser.activeBrush ?? currentUser.brushState?.activeBrush ?? null,
+      blockSize: currentUser.activeBlockSize || currentUser.brushState?.activeBlockSize || 1,
+    });
     debouncedUpdateUrlCoords(px, py);
   }
 
@@ -1793,6 +2669,10 @@
       applyTransform();
       return;
     }
+    if (typeof PixelBlueprint !== 'undefined' && (blueprintDragging || PixelBlueprint.isDragging?.())) {
+      const { x, y } = screenToPixel(e.clientX, e.clientY);
+      if (PixelBlueprint.handlePointerMove(x, y)) return;
+    }
     if (isDrawing && hasBrushCorrido() && !claimDragging) tryDrawAt(e.clientX, e.clientY);
     else if ((e.buttons & 1) && !hasBrushCorrido() && !claimDragging && !isPanning && drawPointerDown) {
       if (Math.hypot(e.clientX - drawPointerDown.x, e.clientY - drawPointerDown.y) > 8 && !brushDragHintShown) {
@@ -1814,6 +2694,15 @@
     if (claimDragging) { claimDragging = false; claimPreview.hidden = true; }
   });
 
+  wrap.addEventListener('dblclick', (e) => {
+    if (!currentUser || claimMode || typeof Arcade === 'undefined') return;
+    const { x, y } = screenToPixel(e.clientX, e.clientY);
+    if (Arcade.tryLaunchAt?.(x, y)) {
+      e.preventDefault();
+      showToast('🎮 Minijuego iniciado en la zona del mapa');
+    }
+  });
+
   wrap.addEventListener('mousedown', (e) => {
     if (e.button === 1 || spaceHeld || e.button === 2) {
       isPanning = true;
@@ -1823,11 +2712,34 @@
       return;
     }
     if (e.button !== 0) return;
+    if (e.altKey && currentUser?.gadgets?.includes('eyedropper_pro')) {
+      const { x, y } = screenToPixel(e.clientX, e.clientY);
+      const c = getPixelColorAt(Math.trunc(x), Math.trunc(y));
+      if (c) {
+        if (colorIsUnlocked(c)) {
+          selectColor(c);
+          showToast(`Color ${c} seleccionado`);
+        } else {
+          showToast(`Color ${c} detectado — desbloquéalo en Tienda → Colores`, true);
+        }
+      } else showToast('No hay píxel en esta celda', true);
+      e.preventDefault();
+      return;
+    }
     if (claimMode && currentUser) {
       claimDragging = true;
       claimStart = screenToPixel(e.clientX, e.clientY);
       e.preventDefault();
       return;
+    }
+    if (typeof PixelBlueprint !== 'undefined') {
+      const { x, y } = screenToPixel(e.clientX, e.clientY);
+      if (PixelBlueprint.handlePointerDown(x, y)) {
+        blueprintDragging = true;
+        wrap.classList.add('blueprint-dragging');
+        e.preventDefault();
+        return;
+      }
     }
     drawPointerDown = { x: e.clientX, y: e.clientY };
     if (hasBrushCorrido()) {
@@ -1838,6 +2750,11 @@
   });
 
   wrap.addEventListener('mouseup', (e) => {
+    if (blueprintDragging && typeof PixelBlueprint !== 'undefined') {
+      PixelBlueprint.handlePointerUp();
+      blueprintDragging = false;
+      wrap.classList.remove('blueprint-dragging');
+    }
     if (claimDragging && e.button === 0) finishClaim(e.clientX, e.clientY);
     if (e.button === 0) {
       isDrawing = false;
@@ -1855,6 +2772,11 @@
   });
 
   document.addEventListener('mouseup', () => {
+    if (blueprintDragging && typeof PixelBlueprint !== 'undefined') {
+      PixelBlueprint.handlePointerUp();
+      blueprintDragging = false;
+      wrap.classList.remove('blueprint-dragging');
+    }
     isDrawing = false;
     lastDrawKey = null;
     drawPointerDown = null;
@@ -1914,13 +2836,19 @@
     goToCoords(worldX, worldY, scale);
   });
 
-  window.addEventListener('resize', () => applyTransform());
+  window.addEventListener('resize', handleWindowResize);
 
   const params = new URLSearchParams(location.search);
-  if (params.get('error')) showToast('Error al iniciar sesión con Discord', true);
-  const urlX = params.get('x');
-  const urlY = params.get('y');
-  const urlZ = params.get('z');
+  const authErr = params.get('error');
+  const authMessages = {
+    auth_failed: 'Discord rechazó el login. Revisa Redirect URI y Client Secret en Developer Portal.',
+    redirect_uri: 'Redirect URI incorrecta. Añade http://localhost:3000/auth/discord/callback en Discord → OAuth2 → Redirects.',
+    invalid_secret: 'Client Secret incorrecto. Copia el secret nuevo de Discord Developer Portal a tu .env y reinicia el servidor.',
+    invalid_grant: 'Código de login expirado o ya usado. Cierra Discord, vuelve a localhost:3000 e intenta otra vez.',
+    no_code: 'Discord no devolvió código de autorización.',
+  };
+  if (authErr && authMessages[authErr]) showToast(authMessages[authErr], true);
+  else if (authErr) showToast('Error al iniciar sesión con Discord', true);
 
   restoreFromStorage();
 
@@ -1941,11 +2869,12 @@
       if (data.availableColors?.length) {
         availableColors = data.availableColors.map((c) => String(c).toUpperCase());
       }
-      PMStorage.saveUser(null);
+      if (!hasSessionCookie()) PMStorage.saveUser(null);
     }
     if (data.tycoonUpgrades?.length) tycoonUpgrades = data.tycoonUpgrades;
     if (data.zoomLens?.maxLevel) zoomLensMaxLevel = data.zoomLens.maxLevel;
     renderShop(null, null);
+    if (parseUrlNavigation()) whenLayoutReady(() => applyUrlNavigation());
   });
 
   socket.on('init', (data) => {
@@ -1953,7 +2882,9 @@
     initCanvas();
     loadPixels(data.pixels);
     territories = data.territories || [];
+    PMStorage.set('territories', territories);
     drawTerritories();
+    renderTerritoryList();
     if (data.user) renderAuth(data.user);
     updateQuotaUI(data.quota);
     renderMissions(data.missions);
@@ -1963,33 +2894,20 @@
     }
     if (data.user?.tycoon) updateTycoonUI(data.user.tycoon);
     onlineCount.textContent = data.online;
+    if (data.paintZones?.length) {
+      paintZones = data.paintZones;
+      if (typeof Arcade !== 'undefined') Arcade.setZones(paintZones);
+    }
+    if (data.arcadeGames?.length && typeof Arcade !== 'undefined') Arcade.setGames(data.arcadeGames);
+    if (data.arcadeLive?.length) {
+      arcadeLive = data.arcadeLive;
+      scheduleRender();
+    }
     buildPalette();
     selectColor(selectedColor);
     applyClaimModeUI();
+    restoreInitialViewport(data.spawn);
 
-    const hasUrlCoords = urlX != null && urlY != null;
-    if (hasUrlCoords) {
-      setTimeout(() => goToCoords(Number(urlX), Number(urlY), urlZ ? Number(urlZ) : null), 100);
-    } else if (savedViewport) {
-      setTimeout(() => {
-        if (savedViewport.scale) scale = savedViewport.scale;
-        if (savedViewport.offsetX != null) offsetX = savedViewport.offsetX;
-        if (savedViewport.offsetY != null) offsetY = savedViewport.offsetY;
-        applyTransform();
-        if (savedViewport.x != null && savedViewport.y != null) {
-          hoverCoord = { x: savedViewport.x, y: savedViewport.y };
-          coordDisplay.textContent = `(${savedViewport.x}, ${savedViewport.y})`;
-        }
-      }, 100);
-    } else {
-      setTimeout(() => goToCoords(data.spawn?.x ?? 0, data.spawn?.y ?? 0, 4), 100);
-    }
-
-    const cachedTerritories = PMStorage.get('territories');
-    if (cachedTerritories?.length && !territories.length) {
-      territories = cachedTerritories;
-      drawTerritories();
-    }
     persistUserState(data.quota, data.missions);
   });
 
@@ -1998,14 +2916,29 @@
     setPixel(p.x, p.y, p.c, p);
   });
   socket.on('chisel_progress', ({ x, y, current, required, color, combo }) => {
-    chiselLocal.set(metaKey(x, y), { current, required, color, comboFlash: combo });
+    chiselLocal.set(metaKey(x, y), { current, required, color, comboFlash: combo, updatedAt: Date.now() });
     if (combo) flashChiselCombo();
     scheduleRender();
     updateCursorPreview(lastMouse.x, lastMouse.y);
   });
+  socket.on('chisel_clear', ({ x, y }) => {
+    chiselLocal.delete(metaKey(x, y));
+    scheduleRender();
+    updateCursorPreview(lastMouse.x, lastMouse.y);
+  });
+  socket.on('passive_income', ({ earned }) => {
+    const txt = typeof NumberFormat !== 'undefined'
+      ? NumberFormat.formatCompact(earned, { threshold: 1000, digits: 1 })
+      : earned;
+    showToast(`⚡ Idle +${txt}🪙`);
+  });
   socket.on('tycoon', (t) => updateTycoonUI(t));
   socket.on('tycoon_level', ({ level, bonusCoins }) => {
-    showToast(`¡Nivel ${level + 1}!${bonusCoins ? ` +${bonusCoins}🪙` : ''}`);
+    const lv = fmtLevel((level ?? 0) + 1);
+    const bonus = bonusCoins
+      ? ` +${typeof NumberFormat !== 'undefined' ? NumberFormat.formatCompact(bonusCoins, { threshold: 1_000_000, digits: 2 }) : bonusCoins}🪙`
+      : '';
+    showToast(`¡Nivel ${lv}!${bonus}`);
   });
   socket.on('online', (n) => { onlineCount.textContent = n; });
   socket.on('quota', (q) => updateQuotaUI(q));
@@ -2015,11 +2948,15 @@
   socket.on('error_msg', ({ message }) => showToast(message, true));
   socket.on('claim_limit', ({ message }) => showToast(message, true));
   socket.on('claim_result', ({ message, capped, territory }) => {
-    showToast(message, capped);
     if (territory) {
-      territories.push(territory);
+      if (!territories.find((x) => x.id === territory.id)) territories.push(territory);
+      PMStorage.set('territories', territories);
       drawTerritories();
       renderTerritoryList();
+      goToTerritory(territory);
+      showToast(`${message} · Guardada en (${territory.x}, ${territory.y})`);
+    } else {
+      showToast(message, capped);
     }
     fetch('/api/me', { credentials: 'include' }).then((r) => r.json()).then((d) => {
       if (d.user) {
@@ -2050,5 +2987,43 @@
   socket.on('siege_end', ({ captured, winner }) => {
     showToast(captured ? `¡${winner} conquistó el territorio!` : 'Asedio terminado sin conquista');
   });
+  socket.on('arcade_live', (data) => {
+    arcadeLive = data?.players || [];
+    scheduleRender();
+  });
+
   socket.on('disconnect', () => showToast('Desconectado — reconectando…', true));
+
+  window.addEventListener('load', () => {
+    loadBlueprintConfig();
+    fetch('/api/minigames').then((r) => r.json()).then((data) => {
+      paintZones = data.zones || [];
+      if (typeof Arcade !== 'undefined') {
+        Arcade.init({
+          zones: data.zones || [],
+          games: data.games || [],
+          reflex: data.reflex,
+          getUser: () => currentUser,
+          getUserId: () => currentUser?.id,
+          goTo: (x, y) => goToCoords(x, y, scale),
+          closeModals,
+          toast: showToast,
+          onUserUpdate: (u) => renderAuth(u),
+          onWallet: (w) => updateWallet(w),
+        });
+        Arcade.bindUI();
+      }
+    }).catch(() => {});
+    if (parseUrlNavigation()) whenLayoutReady(() => applyUrlNavigation());
+  });
+
+  window.addEventListener('pm:bookmark-save', () => {
+    if (!currentUser || !GadgetEffects?.hasGadget(currentUser, 'coord_bookmark')) return;
+    const center = getViewCenterWorld();
+    GadgetEffects.addBookmark(center.x, center.y);
+    GadgetEffects.renderBookmarks((x, y) => goToCoords(x, y, scale));
+    showToast(`Marcador guardado (${Math.trunc(center.x)}, ${Math.trunc(center.y)})`);
+  });
+
+  socket.connect();
 })();
