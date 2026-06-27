@@ -74,6 +74,7 @@ node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 | Sesión no persiste | Volumen montado en `/app/data` |
 | App no arranca | Falta `SESSION_SECRET` en variables |
 | Datos borrados tras deploy | Crear volumen y montar en `/app/data` |
+| Build failed: `VOLUME` not supported | Ya corregido — Railway no permite `VOLUME` en Dockerfile; usa Volumes del dashboard |
 | WebSocket cae | Railway soporta WebSockets; no hace falta config extra |
 
 ## CLI (opcional)
