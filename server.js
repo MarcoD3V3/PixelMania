@@ -125,6 +125,24 @@ const APP_BUILD = (
   || require('./package.json').version
 ).toString().slice(0, 12);
 
+const INDEX_PATH = path.join(__dirname, 'public', 'index.html');
+
+function serveIndexHtml(_req, res) {
+  let html = fs.readFileSync(INDEX_PATH, 'utf8');
+  html = html.replace(
+    /(\/(?:css|js)\/[^"?]+\.(?:css|js))(?:\?[^"]*)?"/g,
+    `$1?v=${APP_BUILD}"`,
+  );
+  if (!html.includes('name="pm-build"')) {
+    html = html.replace(
+      '<head>',
+      `<head>\n  <meta name="pm-build" content="${APP_BUILD}" />`,
+    );
+  }
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.type('html').send(html);
+}
+
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: IS_PROD ? '1d' : 0,
   etag: true,
@@ -136,10 +154,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
   },
 }));
 
-app.get('/', (_req, res) => {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+app.get('/', serveIndexHtml);
 
 const socketCorsOrigin = (() => {
   const url = resolvePublicUrl();
@@ -1118,10 +1133,19 @@ app.get('/health', (_req, res) => {
     env: IS_PROD ? 'production' : 'development',
     build: APP_BUILD,
     arcadeGames: minigamesCfg.listGames().length,
+    features: ['minimap', 'leaderboard', 'arcade', 'tycoon', 'blueprint', 'infinite-map'],
     uptime: Math.floor(process.uptime()),
     pixels: pixels.size,
     users: users.size,
     online: onlineUsers.size,
+  });
+});
+
+app.get('/api/version', (_req, res) => {
+  res.json({
+    build: APP_BUILD,
+    arcadeGames: minigamesCfg.listGames().length,
+    nodeEnv: process.env.NODE_ENV || 'development',
   });
 });
 
